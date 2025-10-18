@@ -1,227 +1,195 @@
-from __future__ import absolute_import, division
-
-import sys
-from   collections import OrderedDict
-
+"""
+Simple recurrent neural network implementation in PyTorch.
+"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
-import theano
-from   theano import tensor
+from .networks_base import RecurrentNetwork
+from .nptools import get_rng
+from .matrixtools import spectral_radius
 
-from .          import matrixtools, nptools, theanotools
-from .recurrent import Recurrent
 
-configs_required = ['Nin', 'Nout']
-configs_default  = {
-    'N':       50,
-    'rho':     1.5,
-    'f_out':   'softmax',
-    'L2_r':    0.002,
-    'L1_Wrec': 0,
-    'L2_Wrec': 0,
-    'fix':     []
-    }
+class SimpleRNN(RecurrentNetwork):
+    """Simple recurrent network with ReLU activation."""
 
-class Simple(Recurrent):
-    """
-    Simple units.
+    def __init__(self, config, params=None, masks=None, seed=1, name=''):
+        super().__init__('simple', name)
 
-    """
-    def __init__(self, config, params=None, seed=1):
-        super(Simple, self).__init__('gru')
-
-        #---------------------------------------------------------------------------------
-        # Config
-        #---------------------------------------------------------------------------------
-
-        self.config = {}
-
-        # Required
-        for k in configs_required:
+        # Store config
+        required = ['Nin', 'Nout']
+        for k in required:
             if k not in config:
-                print("[ Simple ] Error: {} is required.".format(k))
-                sys.exit()
-            self.config[k] = config[k]
+                raise ValueError(f"SimpleRNN requires config key: {k}")
 
-        # Defaults available
-        for k in configs_default:
-            if k in config:
-                self.config[k] = config[k]
-            else:
-                self.config[k] = configs_default[k]
+        defaults = {
+            'alpha': 1.0,
+            'N': 50,
+            'rho': 1.5,
+            'f_out': 'softmax',
+            'L2_r': 0.002,
+            'L1_Wrec': 0,
+            'L2_Wrec': 0,
+            'fix': []
+        }
 
-        #---------------------------------------------------------------------------------
-        # Activations
-        #---------------------------------------------------------------------------------
+        self.config = {**defaults, **config}
 
-        # Hidden
-        self.f_hidden        = tensor.nnet.relu
-        self.states_to_rates = nptools.relu
+        # Network dimensions
+        self.Nin = self.config['Nin']
+        self.N = self.config['N']
+        self.Nout = self.config['Nout']
+        self.alpha = self.config['alpha']
 
-        # Output
-        if self.config['f_out'] == 'softmax':
-            self.f_out  = theanotools.softmax
-            self.f_out3 = theanotools.softmax3
-        elif self.config['f_out'] == 'linear':
-            self.f_out  = (lambda x: x)
-            self.f_out3 = self.f_out
-        else:
-            raise NotImplementedError("[ Simple ] Unknown output activation {}."
-                                      .format(self.config['f_out']))
+        # Fixed parameters
+        self._fixed_params = self.config['fix']
 
-        #---------------------------------------------------------------------------------
-        # Initialize parameters
-        #---------------------------------------------------------------------------------
+        print(f"[ {self.network_name} ] alpha = {self.alpha}")
+        print(f"[ {self.network_name} ] L2_r = {self.config['L2_r']}")
 
-        Nin  = self.config['Nin']
-        N    = self.config['N']
-        Nout = self.config['Nout']
-
+        # Initialize or load parameters
         if params is None:
-            # Random number generator
-            print("Seed = {}".format(seed))
-            rng = np.random.RandomState(seed)
+            self._initialize_params(seed)
+        else:
+            self._load_params(params)
 
-            # Network parameters
-            params = OrderedDict()
-            params['Win']      = rng.normal(size=(Nin, N))
-            params['bin']      = np.zeros(N)
-            params['Wrec']     = rng.normal(size=(N, N))
-            params['Wout']     = config.get('Wout_init', np.zeros((N, Nout)))
-            params['bout']     = np.zeros(Nout)
-            params['states_0'] = config.get('states_0_init', np.arctanh(0.5))*np.ones(N)
+        # Set output activation
+        self.f_out = self.config['f_out']
 
-            # Scale for weight initialization
-            rho = self.config['rho']
+    def _initialize_params(self, seed):
+        """Initialize network parameters."""
+        rng = get_rng(seed, __name__)
+        print(f"Seed = {seed}")
 
-            # Spectral radius
-            W3 = params['Wrec']
-            for W in [W3]:
-                W *= rho/matrixtools.spectral_radius(W)
+        # Input weights
+        Win = rng.normal(size=(self.Nin, self.N))
+        self.Win = nn.Parameter(torch.FloatTensor(Win))
 
-        # Share
-        self.params = OrderedDict()
-        for k in params:
-            self.params[k] = theanotools.shared(params[k], k)
+        # Input biases
+        self.bin = nn.Parameter(torch.zeros(self.N))
 
-        # Trainable parameters
-        self.trainables = [self.params[k]
-                           for k in self.params if k not in self.config['fix']]
+        # Recurrent weights
+        Wrec = rng.normal(size=(self.N, self.N))
+        rho = self.config['rho']
+        rho0 = spectral_radius(Wrec)
+        Wrec *= rho / rho0
+        self.Wrec = nn.Parameter(torch.FloatTensor(Wrec))
 
-        #---------------------------------------------------------------------------------
-        # Setup
-        #---------------------------------------------------------------------------------
+        # Output weights
+        Wout = self.config.get('Wout_init', np.zeros((self.N, self.Nout)))
+        self.Wout = nn.Parameter(torch.FloatTensor(Wout))
 
-        # Dimensions
-        self.Nin  = Nin
-        self.N    = N
-        self.Nout = Nout
+        # Output biases
+        self.bout = nn.Parameter(torch.zeros(self.Nout))
 
-        # E/I mask
-        if False:
-            self.Mrec_gates  = np.ones_like(params['Wrec_gates'])
-            self.Mrec_states = np.ones_like(params['Wrec_states'])
+        # Initial state
+        states_0_init = self.config.get('states_0_init', np.arctanh(0.5))
+        self.x0 = nn.Parameter(torch.FloatTensor(
+            states_0_init * np.ones(self.N)
+        ))
 
-        # Leak
-        self.alpha = config['dt']/config['dt']
+    def _load_params(self, params):
+        """Load parameters from saved values."""
+        self.Win = nn.Parameter(torch.FloatTensor(params['Win']))
+        self.bin = nn.Parameter(torch.FloatTensor(params['bin']))
+        self.Wrec = nn.Parameter(torch.FloatTensor(params['Wrec']))
+        self.Wout = nn.Parameter(torch.FloatTensor(params['Wout']))
+        self.bout = nn.Parameter(torch.FloatTensor(params['bout']))
+        self.x0 = nn.Parameter(torch.FloatTensor(params['states_0']))
 
-        # Regularizers
-        self.L1_Wrec = self.config['L1_Wrec']
-        self.L2_Wrec = self.config['L2_Wrec']
-        self.L2_r    = self.config['L2_r']
-
-        print("alpha = {}".format(self.alpha))
-        print("L2_r = {}".format(self.L2_r))
-
-        #---------------------------------------------------------------------------------
-        # Define a step
-        #---------------------------------------------------------------------------------
-
-        def step(inputs, noise, states, alpha, Win, bin, Wrec):
-            inputs_t     = inputs.dot(Win) + bin
-            state_inputs = inputs_t
-
-            r = self.f_hidden(states)
-
-            next_states = r.dot(Wrec) + state_inputs + noise
-            next_states = (1 - alpha)*states + alpha*next_states
-
-            return next_states
-
-        self.step         = step
-        self.step_params  = [self.alpha]
-        self.step_params += [self.params[k]
-                             for k in ['Win', 'bin', 'Wrec']]
-
-    def get_regs(self, states_0_, states, M):
+    def recurrent_step(self, u, q, x_tm1):
         """
-        Additional regularization terms.
+        Single RNN step.
 
+        Parameters
+        ----------
+        u : tensor (B, Nin)
+            Input.
+        q : tensor (B, N)
+            Noise.
+        x_tm1 : tensor (B, N)
+            Previous state.
+
+        Returns
+        -------
+        x_t : tensor (B, N)
+            Current state.
         """
-        regs = 0
+        # Input transformation
+        inputs_t = torch.matmul(u, self.Win) + self.bin
 
-        if self.L1_Wrec > 0:
-            W = self.params['Wrec']
-            regs += self.L1_Wrec * tensor.mean(abs(W))
+        # Firing rate from previous state
+        r_tm1 = torch.relu(x_tm1)
 
-        if self.L2_Wrec > 0:
-            W = self.params['Wrec']
-            regs += self.L2_Wrec * tensor.mean(tensor.sqr(W))
+        # State update
+        next_states = torch.matmul(r_tm1, self.Wrec) + inputs_t + q
+        x_t = (1 - self.alpha) * x_tm1 + self.alpha * next_states
 
-        #---------------------------------------------------------------------------------
-        # Firing rates
-        #---------------------------------------------------------------------------------
+        return x_t
 
-        if self.L2_r > 0:
-            baseline = 0.
+    def output_layer(self, r):
+        """Apply output transformation."""
+        logits = torch.matmul(r, self.Wout) + self.bout
 
-            M_ = (tensor.tile(M.T, (states.shape[-1], 1, 1))).T
-            states_all = tensor.concatenate(
-                [states_0_.reshape((1, states_0_.shape[0], states_0_.shape[1])), states],
-                axis=0
-                )
-            r = self.f_hidden(states_all)
-            regs += self.L2_r * tensor.sum(tensor.sqr(r - baseline)*M_)/tensor.sum(M_)
+        if self.f_out == 'softmax':
+            return F.softmax(logits, dim=-1)
+        elif self.f_out == 'linear':
+            return logits
+        else:
+            raise ValueError(f"Unknown output activation: {self.f_out}")
 
-        #---------------------------------------------------------------------------------
+    def log_output(self, r):
+        """Apply log output transformation."""
+        logits = torch.matmul(r, self.Wout) + self.bout
+
+        if self.f_out == 'softmax':
+            return F.log_softmax(logits, dim=-1)
+        elif self.f_out == 'linear':
+            return torch.log(logits)
+        else:
+            raise ValueError(f"Unknown output activation: {self.f_out}")
+
+    def get_regs(self, x0, x, M):
+        """
+        Compute regularization terms.
+
+        Parameters
+        ----------
+        x0 : tensor (B, N)
+            Initial states.
+        x : tensor (T, B, N)
+            State trajectory.
+        M : tensor (T, B)
+            Mask indicating valid timesteps.
+
+        Returns
+        -------
+        regs : tensor (scalar)
+            Total regularization.
+        """
+        regs = torch.tensor(0.0, device=x.device)
+
+        # L1 recurrent weights
+        if self.config['L1_Wrec'] > 0:
+            regs += self.config['L1_Wrec'] * torch.mean(torch.abs(self.Wrec))
+
+        # L2 recurrent weights
+        if self.config['L2_Wrec'] > 0:
+            regs += self.config['L2_Wrec'] * torch.mean(self.Wrec ** 2)
+
+        # L2 firing rate
+        if self.config['L2_r'] > 0:
+            # Expand mask to match state dimensions
+            M_expanded = M.unsqueeze(-1).expand_as(x)
+
+            # Combine t=0 with t>0
+            x_all = torch.cat([x0.unsqueeze(0), x], dim=0)
+
+            # Firing rates
+            r = torch.relu(x_all)
+
+            # Regularization
+            regs += self.config['L2_r'] * torch.sum((r ** 2) * M_expanded) / torch.sum(M_expanded)
 
         return regs
-
-    def get_dOmega_dWrec(self, loss, x):
-        # Pascanu's trick
-        scan_node = x.owner.inputs[0].owner
-        assert isinstance(scan_node.op, theano.scan_module.scan_op.Scan)
-        npos   = scan_node.op.n_seqs + 1
-        init_x = scan_node.inputs[npos]
-        g_x    = theano.grad(loss, init_x)
-
-        # To force immediate derivatives
-        d_xt = T.tensor3('d_xt')
-        xt   = T.tensor3('xt')
-
-        # Vanishing-gradient regularization
-        self.bound        = 1e-20
-        self.lambda_Omega = 2
-
-        # Wrec
-        Wrec = self.params['Wrec']
-
-        # Numerator
-        alpha = self.alpha
-        num   = (1 - alpha)*d_xt[1:] + T.dot(alpha*d_xt[1:], Wrec.T)*self.df_hidden(xt)
-        num   = (num**2).sum(axis=2)
-
-        # Denominator
-        denom = (d_xt[1:]**2).sum(axis=2)
-
-        # Omega
-        bound  = self.bound
-        Omega  = (T.switch(T.ge(denom, bound), num/denom, 1) - 1)**2
-        nelems = T.mean(T.ge(denom, bound), axis=1)
-        Omega  = Omega.mean(axis=1).sum()/nelems.sum()
-
-        # Gradient w.r.t Wrec
-        g_Wrec = theano.grad(Omega, Wrec)
-        g_Wrec = theano.clone(g_Wrec, replace=[(d_xt, g_x), (xt, x)])
-
-        return self.lambda_Omega * g_Wrec

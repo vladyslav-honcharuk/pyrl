@@ -7,7 +7,7 @@ A parametric working memory task, based on
   http://dx.doi.org/10.1523/JNEUROSCI.1875-10.2010
 
 """
-from __future__ import division
+
 
 import numpy as np
 

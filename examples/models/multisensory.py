@@ -7,7 +7,7 @@ Multisensory integration, based on
   http://dx.doi.org/10.1038/nn.3865
 
 """
-from __future__ import division
+
 
 import numpy as np
 
@@ -37,7 +37,7 @@ sigma = np.sqrt(2*100*0.021)
 # Separate visual and auditory inputs
 N    = 150
 Wins = []
-for i in xrange(3):
+for i in range(3):
     Win = np.zeros((len(inputs), N))
     Win[inputs['FIXATION']]          = 1
     Win[inputs['VISUAL-P'],:N//3]    = 1

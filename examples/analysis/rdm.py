@@ -1,11 +1,11 @@
-from __future__ import division
+
 
 import os
 
 import numpy as np
 
-from pyrl          import datatools, fittools, runtools, tasktools, utils
-from pyrl.figtools import Figure
+from pyrl_torch import datatools, fittools, runtools, tasktools, utils
+from pyrl_torch.figtools import Figure
 
 #/////////////////////////////////////////////////////////////////////////////////////////
 
@@ -557,7 +557,7 @@ def sort(trialsfile, plots, unit=None, network='p', **kwargs):
             on_choice(plots['on-choice'], unit)
     else:
         name = plots
-        for unit in xrange(N):
+        for unit in range(N):
             w = 174/25.4
             r = 0.5
             h = r*w
@@ -1085,7 +1085,7 @@ def get_preferred_targets(trials, perf, r):
 
     """
     dprime = get_choice_selectivity(trials, perf, r)
-    for i in xrange(len(dprime)):
+    for i in range(len(dprime)):
         print(i, dprime[i])
 
     return 2*(dprime > 0) - 1
@@ -1519,7 +1519,7 @@ def sort_postdecision(trialsfile, m, plots, unit=None, **kwargs):
         Ts_saccade(plots['Ts-saccade'], unit)
     else:
         figspath, name = plots
-        for unit in xrange(N):
+        for unit in range(N):
             w = 174/25.4
             r = 0.35
             h = r*w
@@ -1660,7 +1660,7 @@ def do(action, args, config):
         print("{} trials".format(n_trials))
         task   = model.Task()
         trials = []
-        for n in xrange(n_trials):
+        for n in range(n_trials):
             k = tasktools.unravel_index(n, (len(left_rights), len(cohs)))
             context = {
                 'left_right': left_rights[k.pop(0)],

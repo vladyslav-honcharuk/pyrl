@@ -7,7 +7,7 @@ Economic choice task, based on
   http://dx.doi.org/10.1038/nature04676
 
 """
-from __future__ import division
+
 
 import numpy as np
 

@@ -1,7 +1,11 @@
+"""
+Default configuration parameters for policy gradient training.
+"""
 import numpy as np
 
 required = ['inputs', 'actions', 'tmax', 'n_gradient', 'n_validation']
-default  = {
+
+default = {
     'Performance':           None,
     'N':                     100,
     'p0':                    0.1,
@@ -9,7 +13,7 @@ default  = {
     'baseline_p0':           1,
     'lr':                    0.004,
     'baseline_lr':           0.004,
-    'max_iter':              100000,
+    'max_iter':              100,
     'fix':                   [],
     'baseline_fix':          [],
     'target_reward':         np.inf,
@@ -39,4 +43,4 @@ default  = {
     'L2_Wrec':               0,
     'policy_seed':           1,
     'baseline_seed':         2
-    }
+}

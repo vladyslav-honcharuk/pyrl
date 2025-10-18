@@ -111,7 +111,7 @@ class Task(object):
 #/////////////////////////////////////////////////////////////////////////////////////////
 
 if __name__ == '__main__':
-    from pyrl.model import Model
+    from pyrl_torch.model import Model
 
     model = Model(inputs=inputs, actions=actions,
                   baseline_bout=baseline_bout,

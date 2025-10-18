@@ -1,6 +1,6 @@
 import numpy as np
 
-from pycog.figtools import Figure
+from pyrl.figtools import Figure
 
 w = 174/25.4
 r = 0.6
@@ -68,7 +68,7 @@ def plot_fixation(plot):
 
     x  = np.linspace(dt, tmax, int(tmax/dt))
     y  = np.zeros_like(x)
-    for i in xrange(len(x)):
+    for i in range(len(x)):
         if fixation[0] < x[i] <= fixation[1] or stimulus[0] < x[i] <= stimulus[1]:
             y[i] = 1
     plot.plot(x, y, 'k', lw=1.5)
@@ -83,7 +83,7 @@ def plot_stimulus(plot, rng, coh=+12.8):
     x = np.linspace(dt, tmax, int(tmax/dt))
     y_high = np.zeros_like(x)
     y_low  = np.zeros_like(x)
-    for i in xrange(len(x)):
+    for i in range(len(x)):
         if stimulus[0] < x[i] <= stimulus[1]:
             y_high[i] = (1 + coh/100)/2 + rng.normal(scale=0.1)
             y_low[i]  = (1 - coh/100)/2 + rng.normal(scale=0.1)
@@ -129,7 +129,7 @@ plot.axis_off('bottom')
 x  = np.linspace(0, tmax, int(tmax/dt)+1)
 y_high = np.zeros_like(x)
 y_low  = np.zeros_like(x)
-for i in xrange(len(x)):
+for i in range(len(x)):
     if decision[0] < x[i] <= decision[1]:
         y_high[i] = 1
 y_high += offset

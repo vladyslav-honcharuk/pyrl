@@ -8,7 +8,7 @@ Perceptual decision-making with postdecision wagering, based on
   http://dx.doi.org/10.1126/science.1169405
 
 """
-from __future__ import division
+
 
 import numpy as np
 
@@ -36,7 +36,7 @@ sigma = np.sqrt(2*100*0.01)
 # Separate inputs
 N    = 100
 Wins = []
-for i in xrange(3):
+for i in range(3):
     Win = np.zeros((len(inputs), N))
     Win[inputs['FIXATION']]      = 1
     Win[inputs['LEFT'], :N//2] = 1
@@ -189,7 +189,7 @@ def get_step(rng, dt, trial, t, a):
 
     return u, reward, status
 
-from pyrl.performance import PerformancePostdecisionWager as Performance
+from pyrl_torch.performance import PerformancePostdecisionWager as Performance
 
 def terminate(perf):
     p_answer  = perf.n_answer/perf.n_trials

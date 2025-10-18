@@ -1,11 +1,11 @@
-from __future__ import absolute_import, division
+
 
 import os
 
 import numpy as np
 
-from pyrl          import fittools, runtools, tasktools, utils
-from pyrl.figtools import Figure
+from pyrl_torch import fittools, runtools, tasktools, utils
+from pyrl_torch.figtools import Figure
 
 #/////////////////////////////////////////////////////////////////////////////////////////
 
@@ -254,7 +254,7 @@ def sort(trialsfile, plots, units=None, network='p', **kwargs):
             on_stimulus(plot, unit)
     else:
         figspath, name = plots
-        for unit in xrange(N):
+        for unit in range(N):
             fig  = Figure()
             plot = fig.add()
 
@@ -305,7 +305,7 @@ def do(action, args, config):
         print("{} trials".format(n_trials))
         task   = model.Task()
         trials = []
-        for n in xrange(n_trials):
+        for n in range(n_trials):
             k       = tasktools.unravel_index(n, (len(mods), len(freqs)))
             context = {'mod': mods[k.pop(0)], 'freq': freqs[k.pop(0)]}
             trials.append(task.get_condition(pg.rng, pg.dt, context))

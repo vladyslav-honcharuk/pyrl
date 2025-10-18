@@ -8,7 +8,6 @@ A more convenient interface to matplotlib.
   matplotlib to the latest version and this problem will go away.
 
 """
-from __future__ import absolute_import, division
 
 import os
 import subprocess
@@ -21,14 +20,13 @@ from   scipy.special import cbrt
 
 import matplotlib                 as mpl; mpl.use('Agg') # For compatibility on cluster
 from   matplotlib.colors          import colorConverter
-from   matplotlib.mlab            import PCA
 import matplotlib.pyplot          as plt
 import mpl_toolkits.mplot3d.art3d as art3d
 from   mpl_toolkits.mplot3d       import Axes3D
 
 from . import utils
 
-THIS = "pyrl.figtools"
+THIS = "pyrl_torch.figtools"
 
 #=========================================================================================
 # Font, LaTeX
@@ -53,17 +51,17 @@ else:
 
     if 'hfs242' in utils.get_here(__file__):
         mpl.rcParams['text.latex.preamble'] = (
-            '\usepackage{/home/hfs242/lib/tex/sfmath}'
-            '\usepackage[T1]{fontenc}'
-            '\usepackage{amsmath}'
-            '\usepackage{amssymb}'
+            '\\usepackage{/home/hfs242/lib/tex/sfmath}'
+            '\\usepackage[T1]{fontenc}'
+            '\\usepackage{amsmath}'
+            '\\usepackage{amssymb}'
             )
     else:
         mpl.rcParams['text.latex.preamble'] = (
-            '\usepackage{sfmath}'
-            '\usepackage[T1]{fontenc}'
-            '\usepackage{amsmath}'
-            '\usepackage{amssymb}'
+            '\\usepackage{sfmath}'
+            '\\usepackage[T1]{fontenc}'
+            '\\usepackage{amsmath}'
+            '\\usepackage{amssymb}'
             )
 
 #=========================================================================================
@@ -392,7 +390,7 @@ class Subplot(object):
         """
         defaults = {
             'color':    Figure.colors('blue'),
-            'normed':   True,
+            'density':  True,
             'rwidth':   1,
             'histtype': 'stepfilled'
             }
@@ -554,14 +552,14 @@ class Figure(object):
 
     def __getitem__(self, k):
         if isinstance(k, int):
-            k = self.plots.keys()[k]
+            k = list(self.plots.keys())[k]
 
         return self.plots[k]
 
     #/////////////////////////////////////////////////////////////////////////////////////
 
     def plotlabels(self, labels, **kwargs):
-        plot = self.plots.values()[0]
+        plot = list(self.plots.values())[0]
         for label, (x, y) in labels.items():
             plot.text(x, y, label, ha='left', va='bottom',
                       transform=self.transFigure, **kwargs)
@@ -594,13 +592,30 @@ class Figure(object):
             path = os.path.join(path, 'work', 'figs')
             utils.mkdir_p(path)
 
-        fname = join(path, name + '.' + self.p['format'])
+        if path is not None:
+            fname = join(path, name + '.' + self.p['format'])
+        else:
+            fname = name + '.' + self.p['format']
         plt.figure(self.fig.number)
         plt.savefig(fname, transparent=transparent, **kwargs)
         print("[ Figure.save ] " + fname)
 
         # Copy to clipboard if possible
-        utils.copy_to_clipboard(fname)
+        copy_to_clipboard(fname)
 
     def close(self):
         plt.close(self.fig)
+
+
+#=========================================================================================
+# Utility function for copying to clipboard
+#=========================================================================================
+
+def copy_to_clipboard(s):
+    """Copy string to clipboard (macOS only)."""
+    try:
+        proc = subprocess.Popen('pbcopy', env={'LANG': 'en_US.UTF-8'},
+                                stdin=subprocess.PIPE)
+        proc.communicate(s.encode('utf-8'))
+    except:
+        pass

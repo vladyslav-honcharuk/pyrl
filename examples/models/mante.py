@@ -7,7 +7,7 @@ Context-dependent integration task, based on
   http://dx.doi.org/10.1038/nature12742
 
 """
-from __future__ import division
+
 
 import numpy as np
 

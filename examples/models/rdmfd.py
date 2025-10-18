@@ -8,7 +8,7 @@ Perceptual decision-making task, based on
   http://dx.doi.org/10.1523/JNEUROSCI.4761-07.2008
 
 """
-from __future__ import division
+
 
 import numpy as np
 

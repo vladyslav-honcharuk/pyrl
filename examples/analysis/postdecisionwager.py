@@ -1,11 +1,11 @@
-from __future__ import division
+
 
 import os
 
 import numpy as np
 
-from pyrl          import datatools, fittools, runtools, tasktools, utils
-from pyrl.figtools import Figure
+from pyrl_torch import datatools, fittools, runtools, tasktools, utils
+from pyrl_torch.figtools import Figure
 
 #/////////////////////////////////////////////////////////////////////////////////////////
 
@@ -315,7 +315,7 @@ def get_preferred_targets(trials, perf, r):
 
     """
     dprime = compute_dprime(trials, perf, r)
-    for i in xrange(len(dprime)):
+    for i in range(len(dprime)):
         if abs(dprime[i]) > 0.5:
             print(i, dprime[i])
 
@@ -543,7 +543,7 @@ def sort(trialsfile, plots, unit=None, network='p', **kwargs):
         return y
     else:
         name = plots
-        for unit in xrange(N):
+        for unit in range(N):
             w   = utils.mm_to_inch(174)
             r   = 0.35
             fig = Figure(w=w, r=r)
@@ -622,7 +622,7 @@ def do(action, args, config):
         print("{} trials".format(n_trials))
         task   = model.Task()
         trials = []
-        for n in xrange(n_trials):
+        for n in range(n_trials):
             k = tasktools.unravel_index(n, (len(wagers), len(left_rights), len(cohs)))
             context = {
                 'wager':      wagers[k.pop(0)],

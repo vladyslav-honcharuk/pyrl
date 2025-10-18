@@ -1,4 +1,4 @@
-from __future__ import division
+
 
 import os
 
@@ -6,7 +6,7 @@ import numpy as np
 
 from scipy import stats
 
-from pyrl          import datatools, fittools, runtools, tasktools, utils
+from pyrl import datatools, fittools, runtools, tasktools, utils
 from pyrl.figtools import Figure
 
 #/////////////////////////////////////////////////////////////////////////////////////////
@@ -482,7 +482,7 @@ def sort_epoch(behaviorfile, activityfile, epoch, offers, plots, units=None, net
             plot_activity(plot, unit)
     else:
         name = plots
-        for unit in xrange(N):
+        for unit in range(N):
             fig  = Figure()
             plot = fig.add()
 
@@ -529,7 +529,7 @@ def do(action, args, config):
         print("{} trials".format(n_trials))
         task   = model.Task()
         trials = []
-        for n in xrange(n_trials):
+        for n in range(n_trials):
             k = tasktools.unravel_index(n, (len(juices), len(offers)))
             context = {
                 'juice': juices[k.pop(0)],

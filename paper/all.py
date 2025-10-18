@@ -2,7 +2,7 @@
 Reproduce every figure in the paper from scratch.
 
 """
-from __future__ import division
+
 
 import argparse
 import datetime
@@ -74,7 +74,7 @@ def train(model, seed=None, main=False):
         extra += ' --gpu'
 
     tstart = datetime.datetime.now()
-    call("python {} {} train{}".format(join(dopath, 'do.py'),
+    call("python3 {} {} train{}".format(join(dopath, 'do.py'),
                                        join(modelspath, model),
                                        extra))
     tend = datetime.datetime.now()
@@ -85,7 +85,7 @@ def train(model, seed=None, main=False):
     np.savetxt(timefile, [totalmins], fmt='%d', header='mins')
 
 def train_seeds(model, start_seed=1000, n_train=1):
-    for seed in xrange(start_seed, start_seed+n_train):
+    for seed in range(start_seed, start_seed+n_train):
         print("[ train_seeds ] {}".format(seed))
         train(model, seed=seed)
 
@@ -96,7 +96,7 @@ def do_action(model, action, analysis=None, seed=None, args=''):
     if seed is not None:
         args = '--suffix _s{0} '.format(seed) + args
 
-    call("python {} {} run {} {} {}".format(join(dopath, 'do.py'),
+    call("python3 {} {} run {} {} {}".format(join(dopath, 'do.py'),
                                             join(modelspath, model),
                                             join(analysispath, analysis),
                                             action,
@@ -121,7 +121,7 @@ ntrain     = 5
 #-----------------------------------------------------------------------------------------
 
 model     = 'rdm_fixed'
-ntrials_b = 5000
+ntrials_b = 50000 
 ntrials_a = 50
 
 if 'rdm_fixed' in args:
@@ -135,10 +135,10 @@ if 'rdm_fixed' in args:
     do_action(model, 'sort')
 
 if 'rdm_fixed-seeds' in args:
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TRAIN: Perceptual decision-making (FD) (seed = {})".format(seed))
         train(model, seed=seed)
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TEST: Perceptual decision-making (FD) (seed = {})".format(seed))
         trials(model, 'b', ntrials_b, seed=seed)
         do_action(model, 'psychometric', seed=seed)
@@ -157,10 +157,10 @@ if 'rdm_fixedlinearbaseline' in args:
     do_action(model, 'sort')
 
 if 'rdm_fixedlinearbaseline-seeds' in args:
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TRAIN: Perceptual decision-making (FD), linear baseline (seed = {})".format(seed))
         train(model, seed=seed)
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TEST: Perceptual decision-making (FD), linear baseline (seed = {})".format(seed))
         trials(model, 'b', ntrials_b, seed=seed)
         do_action(model, 'psychometric', seed=seed)
@@ -198,10 +198,10 @@ if 'rdm_rt' in args:
     do_action(model, 'sort')
 
 if 'rdm_rt-seeds' in args:
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TRAIN: Perceptual decision-making (RT) (seed = {})".format(seed))
         train(model, seed=seed)
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TEST: Perceptual decision-making (RT) (seed = {})".format(seed))
         trials(model, 'b', ntrials_b, seed=seed)
         do_action(model, 'psychometric', seed=seed)
@@ -224,14 +224,14 @@ if 'mante' in args:
     do_action(model, 'sort')
 
 if 'mante-seeds' in args:
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TRAIN: Context-dependent integration (seed = {})".format(seed))
         train(model, seed=seed)
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TEST: Context-dependent integration (seed = {})".format(seed))
         trials(model, 'b', ntrials_b, seed=seed)
         do_action(model, 'psychometric', seed=seed)
-    #for seed in xrange(start_seed, start_seed+ntrain):
+    #for seed in range(start_seed, start_seed+ntrain):
     #    print("=> TEST: Context-dependent integration (seed = {})".format(seed))
     #    trials(model, 'a', ntrials_a, seed=seed)
     #    do_action(model, 'statespace', seed=seed)
@@ -254,10 +254,10 @@ if 'multisensory' in args:
     do_action(model, 'sort')
 
 if 'multisensory-seeds' in args:
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TRAIN: Multisensory integration (seed = {})".format(seed))
         train(model, seed=seed)
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TEST: Multisensory integration (seed = {})".format(seed))
         trials(model, 'b', ntrials_b, seed=seed)
         do_action(model, 'psychometric', seed=seed)
@@ -279,10 +279,10 @@ if 'romo' in args:
     do_action(model, 'sort')
 
 if 'romo-seeds' in args:
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TRAIN: Parametric working memory (seed = {})".format(seed))
         train(model, seed=seed)
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TEST: Parametric working memory (seed = {})".format(seed))
         trials(model, 'b', ntrials_b, seed=seed)
         do_action(model, 'performance', seed=seed)
@@ -357,10 +357,10 @@ if 'padoaschioppa2006' in args:
     do_action(model, 'sort_epoch', args='prechoice policy')
 
 if 'padoaschioppa2006-seeds' in args:
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TRAIN: Padoa-Schioppa 2006 (seed = {})".format(seed))
         train(model, seed=seed)
-    for seed in xrange(start_seed, start_seed+ntrain):
+    for seed in range(start_seed, start_seed+ntrain):
         print("=> TEST: Padoa-Schioppa 2006 (seed = {})".format(seed))
         trials(model, 'b', ntrials_b, seed=seed)
         do_action(model, 'choice_pattern', seed=seed)

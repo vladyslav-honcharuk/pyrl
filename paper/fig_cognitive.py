@@ -1,4 +1,4 @@
-from __future__ import division
+
 
 import imp
 import os
@@ -104,7 +104,7 @@ fig.add('mante-color-choice-0',   [x0_mante,
 fig.add('mante-context-choice-0', [x0_mante,
                                    fig['mante-color-choice-0'].y-dy_mante-h_mante,
                                    w_mante, h_mante])
-for i in xrange(1, 4):
+for i in range(1, 4):
     fig.add('mante-choice-{}'.format(i),
             [fig['mante-choice-{}'.format(i-1)].right+dx_mante,
              fig['mante-choice-0'].y, w_mante, h_mante])
@@ -170,7 +170,7 @@ plot.xlabel('Percent color coherence')
 
 units     = [2, 74, 90, 63]
 all_plots = []
-for i in xrange(len(units)):
+for i in range(len(units)):
     plots = {
         'choice':         fig['mante-choice-'+str(i)],
         'motion-choice':  fig['mante-motion-choice-'+str(i)],
@@ -204,7 +204,7 @@ lims = {
     }
 
 #for k, v in lims.items():
-#    for i in xrange(len(units)):
+#    for i in range(len(units)):
 #        plot = fig['mante-{}-{}'.format(k, i)]
         #plot.yticks([0, v])
         #plot.ylim(v)
@@ -224,7 +224,7 @@ ticks = {
     2: [(0, 0.4), (-0.8, -0.4, 0), (0, 1, 2), (-1, 0, 1)],
     3: [(-0.8, 0, 0.8), (-0.8, 0, 0.8), (-0.8, -0.4, 0, 0.4), (-0.8, 0, 0.8)]
     }
-for i in xrange(len(units)):
+for i in range(len(units)):
     for j, k in enumerate(['choice', 'motion-choice', 'color-choice', 'context-choice']):
         plot = fig['mante-{}-{}'.format(k, i)]
         plot.ylim(lims[i][j])
@@ -264,7 +264,7 @@ plot.ylabel('Percent high choices')
 kwargs = {'lw': 1.25, 'dashes': [3, 2]}
 
 units = [95, 29, 92]
-plots = [fig['ms-'+str(i)] for i in xrange(len(units))]
+plots = [fig['ms-'+str(i)] for i in range(len(units))]
 multisensory_analysis.sort(multisensory_activity, plots, units=units, **kwargs)
 
 for p in ['ms-0', 'ms-1', 'ms-2']:
@@ -299,7 +299,7 @@ plot.ylabel('$f_2$ (Hz)')
 kwargs = {'lw': 1}
 
 units = [42, 4, 81]
-plots = [fig['romo-'+str(i)] for i in xrange(len(units))]
+plots = [fig['romo-'+str(i)] for i in range(len(units))]
 romo_analysis.sort(romo_activity, plots, units=units, **kwargs)
 
 plots[0].ylim(0, 2)

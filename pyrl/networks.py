@@ -1,13 +1,10 @@
-from __future__ import absolute_import
-
-from . import gru
-#from . import gru2
-from . import linear
-from . import simple
+"""
+Registry of available network architectures.
+"""
+from .gru import GRU
+from .simple import SimpleRNN
 
 Networks = {
-    'linear': linear.Linear,
-    'gru':    gru.GRU,
-    #'gru2':   gru2.GRU,
-    'simple': simple.Simple
-    }
+    'gru': GRU,
+    'simple': SimpleRNN,
+}

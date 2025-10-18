@@ -1,10 +1,8 @@
-from __future__ import absolute_import, division
-
 import os
 
 import numpy as np
 
-from pyrl          import fittools, runtools, tasktools, utils
+from pyrl import fittools, runtools, tasktools, utils
 from pyrl.figtools import apply_alpha, Figure
 
 #/////////////////////////////////////////////////////////////////////////////////////////
@@ -211,7 +209,7 @@ def get_preferred_targets(trials, perf, r, verbose=False):
     """
     dprime = compute_dprime(trials, perf, r)
     if verbose:
-        for i in xrange(len(dprime)):
+        for i in range(len(dprime)):
             if abs(dprime[i]) > 0.5:
                 print(i, dprime[i])
 
@@ -466,7 +464,7 @@ def sort(trialsfile, all_plots, units=None, network='p', **kwargs):
             yall += y
     else:
         figspath, name = all_plots
-        for unit in xrange(N):
+        for unit in range(N):
             w   = 2.5
             h   = 6
             fig = Figure(w=w, h=h, axislabelsize=7.5, ticklabelsize=6.5)
@@ -742,7 +740,7 @@ def sort_statespace(trialsfile, all_plots, units=None, network='p', **kwargs):
             yall += y
     else:
         figspath, name = all_plots
-        for unit in xrange(N):
+        for unit in range(N):
             w   = 2.5
             h   = 6
             fig = Figure(w=w, h=h, axislabelsize=7.5, ticklabelsize=6.5)
@@ -1095,9 +1093,9 @@ def statespace(trialsfile, plots=None, dt_reg=50, **kwargs):
 
     # Regression coefficients
     beta = np.zeros((nunits, ntime, nreg))
-    for i in xrange(nunits):
+    for i in range(nunits):
         A = np.linalg.inv(F[i].dot(F[i].T)).dot(F[i])
-        for k in xrange(ntime):
+        for k in range(ntime):
             beta[i,k] = A.dot(r[i,k])
             if np.any(np.isnan(beta[i,k])):
                 raise RuntimeError("[ mante.regress ] Regression failed.")
@@ -1172,7 +1170,7 @@ def statespace(trialsfile, plots=None, dt_reg=50, **kwargs):
 
     # Time-independent regression vectors
     beta_max = np.zeros((nreg, nunits))
-    for v in xrange(nreg):
+    for v in range(nreg):
         imax        = np.argmax(np.linalg.norm(beta[v], axis=1))
         beta_max[v] = beta[v,imax]
 
@@ -1304,7 +1302,7 @@ def statespace(trialsfile, plots=None, dt_reg=50, **kwargs):
                                             ['k', Figure.colors('darkblue')]):
             transform = plot.ax.transAxes
             colors    = [apply_alpha(basecolor, alpha) for alpha in [0.4, 0.7, 1]]
-            for i in xrange(3):
+            for i in range(3):
                 plot.plot(0.5+(i+0.5)*dx, y, 'o', mfc=colors[i], mec=colors[i],
                           ms=ms_filled, mew=mew_filled, transform=transform)
                 plot.plot(0.5-(i+0.5)*dx, y, 'o', mfc='none', mec=colors[i],
@@ -1500,7 +1498,7 @@ def do(action, args, config):
         print("{} trials".format(n_trials))
         task   = model.Task()
         trials = []
-        for n in xrange(n_trials):
+        for n in range(n_trials):
             k = tasktools.unravel_index(n, (len(mcs),
                                             len(left_rights), len(left_rights),
                                             len(cohs), len(cohs)))

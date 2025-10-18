@@ -1,53 +1,41 @@
-from __future__ import absolute_import
+"""PBS/cluster job file generation utilities."""
 
 import os
-
 from .utils import mkdir_p
+
 
 def write_jobfile(cmd, jobname, pbspath, scratchpath,
                   nodes=1, ppn=1, gpus=0, mem=4, ndays=1, queue=''):
     """
-    Create a job file.
+    Create a PBS job file for cluster submission.
 
     Parameters
     ----------
-
     cmd : str
-          Command to execute.
-
+        Command to execute.
     jobname : str
-              Name of the job.
-
+        Name of the job.
     pbspath : str
-              Directory to store PBS file in.
-
+        Directory to store PBS file in.
     scratchpath : str
-                  Directory to store output files in.
-
+        Directory to store output files in.
     nodes : int, optional
-            Number of compute nodes.
-
+        Number of compute nodes (default: 1).
     ppn : int, optional
-          Number of cores per node.
-
+        Number of cores per node (default: 1).
     gpus : int, optional
-           Number of GPU cores.
-
+        Number of GPU cores (default: 0).
     mem : int, optional
-          Amount, in GB, of memory.
-
+        Amount, in GB, of memory (default: 4).
     ndays : int, optional
-            Running time, in days.
-
+        Running time, in days (default: 1).
     queue : str, optional
-            Queue name.
+        Queue name (default: '').
 
     Returns
     -------
-
     jobfile : str
-              Path to the job file.
-
+        Path to the created job file.
     """
     if gpus > 0:
         gpus = ':gpus={}:titan'.format(gpus)
@@ -70,7 +58,7 @@ def write_jobfile(cmd, jobname, pbspath, scratchpath,
             + '\n'
             + '#PBS -l nodes={}:ppn={}{}\n'.format(nodes, ppn, gpus)
             + '#PBS -l mem={}GB\n'.format(mem)
-            + '#PBS -l walltime={}:00:00\n'.format(24*ndays)
+            + '#PBS -l walltime={}:00:00\n'.format(24 * ndays)
             + queue
             + '#PBS -N {}\n'.format(jobname[0:16])
             + ('#PBS -e localhost:{}/${{PBS_JOBNAME}}.e${{PBS_JOBID}}\n'
@@ -86,6 +74,6 @@ def write_jobfile(cmd, jobname, pbspath, scratchpath,
             + '{} >> {}.log 2>&1\n'.format(cmd, jobname)
             + '\n'
             + 'exit 0;\n'
-            )
+        )
 
     return jobfile

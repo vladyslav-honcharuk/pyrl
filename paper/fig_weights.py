@@ -90,7 +90,7 @@ plot.text_upper_left(r'$W_\text{rec}$', fontsize=fontsize, dy=dy)
 plot.text_upper_right(r'$\rho={:.3f}$'.format(rho), fontsize=fontsize, dy=dy)
 plot.xlabel('$W$')
 
-#for j in xrange(W.shape[1]):
+#for j in range(W.shape[1]):
 #    print(sum(1*(W[:,j] != 0)))
 
 Wrec_gates = params['Wrec_gates']

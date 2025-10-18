@@ -1,907 +1,667 @@
-from __future__ import absolute_import, division
-
-from   collections import OrderedDict
+"""
+Policy Gradient implementation in PyTorch for training RNNs on cognitive tasks.
+"""
+from collections import OrderedDict
 import datetime
 import sys
 
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
-import theano
-from   theano import tensor
-
-from .         import nptools, tasktools, theanotools, utils
-from .debug    import DEBUG
+from . import utils
+from . import nptools
 from .networks import Networks
-from .sgd      import Adam
 
-class PolicyGradient(object):
-    def __init__(self, Task, config_or_savefile, seed, dt=None, load='best'):
+
+class PolicyGradient:
+    """Policy gradient algorithm for training recurrent neural networks."""
+
+    def __init__(self, Task, config_or_savefile, seed, dt=None, load='best', device=None):
         self.task = Task()
 
-        #=================================================================================
-        # Network setup
-        #=================================================================================
-
-        if isinstance(config_or_savefile, str):
-            #-----------------------------------------------------------------------------
-            # Existing model
-            #-----------------------------------------------------------------------------
-
-            savefile = config_or_savefile
-            save = utils.load(savefile)
-            self.save   = save
-            self.config = save['config']
-
-            # Model summary
-            print("[ PolicyGradient ]")
-            print("  Loading {}".format(savefile))
-            print("  Last saved after {} updates.".format(save['iter']))
-
-            # Performance
-            items = OrderedDict()
-            items['Best reward'] = '{} (after {} updates)'.format(save['best_reward'],
-                                                                  save['best_iter'])
-            if save['best_perf'] is not None:
-                items.update(save['best_perf'].display(output=False))
-            utils.print_dict(items)
-
-            # Time step
-            self.dt = dt
-            if self.dt is None:
-                self.dt = self.config['dt']
-                print("Using config dt = {}".format(self.dt))
-
-            # Leak
-            alpha = self.dt/self.config['tau']
-
-            # Which parameters to load?
-            if load == 'best':
-                params_p = save['best_policy_params']
-                params_b = save['best_baseline_params']
-            elif load == 'current':
-                params_p = save['current_policy_params']
-                params_b = save['current_baseline_params']
-            else:
-                raise ValueError(load)
-
-            # Masks
-            masks_p = save['policy_masks']
-            masks_b = save['baseline_masks']
-
-            # Policy network
-            self.policy_config = save['policy_config']
-            self.policy_config['alpha'] = alpha
-
-            Network = Networks[self.config['network_type']]
-            self.policy_net = Network(self.policy_config, params=params_p,
-                                      masks=masks_p, name='policy')
-
-            # Baseline network
-            self.baseline_config = save['baseline_config']
-            self.baseline_config['alpha'] = alpha
-
-            Network = Networks[self.config.get('baseline_network_type',
-                                               self.config['network_type'])]
-            self.baseline_net = Network(self.baseline_config, params=params_b,
-                                        masks=masks_b, name='baseline')
+        # Determine device
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
-            #-----------------------------------------------------------------------------
-            # Create new model.
-            #-----------------------------------------------------------------------------
+            self.device = torch.device(device)
 
-            config = config_or_savefile
-            self.config = config
+        # Load or create model
+        if isinstance(config_or_savefile, str):
+            self._load_from_file(config_or_savefile, dt, load)
+        else:
+            self._create_new_model(config_or_savefile, dt, seed)
 
-            # Time step
-            self.dt = dt
-            if self.dt is None:
-                self.dt = config['dt']
-                print("Using config dt = {}".format(self.dt))
+        # Move networks to device
+        self.policy_net.to(self.device)
+        self.baseline_net.to(self.device)
 
-            # Leak
-            alpha = self.dt/config['tau']
+        # Setup
+        self._setup_training()
 
-            # Policy network
-            K = config['p0']*config['N']
-            self.policy_config = {
-                'Nin':      config['Nin'],
-                'N':        config['N'],
-                'Nout':     config['Nout'],
-                'p0':       config['p0'],
-                'rho':      config['rho'],
-                'f_out':    'softmax',
-                'Win':      config['Win']*np.sqrt(K)/config['Nin'],
-                'Win_mask': config['Win_mask'],
-                'fix':      config['fix'],
-                'L2_r':     config['L2_r'],
-                'L1_Wrec':  config['L1_Wrec'],
-                'L2_Wrec':  config['L2_Wrec'],
-                'alpha':    alpha
-                }
+    def _load_from_file(self, savefile, dt, load):
+        """Load model from saved file."""
+        save = utils.load(savefile)
+        self.save = save
+        self.config = save['config']
 
-            # Network type
-            Network = Networks[config['network_type']]
-            self.policy_net = Network(self.policy_config,
-                                      seed=config['policy_seed'], name='policy')
+        print("[ PolicyGradient ]")
+        print(f"  Loading {savefile}")
+        print(f"  Last saved after {save['iter']} updates.")
 
-            # Baseline network
-            #Win = np.zeros((self.policy_net.N + len(config['actions']), 3*config['N']))
-            #Win[self.policy_net.N:] = 1
+        # Performance
+        items = OrderedDict()
+        items['Best reward'] = f"{save['best_reward']} (after {save['best_iter']} updates)"
+        if save['best_perf'] is not None:
+            items.update(save['best_perf'].display(output=False))
+        utils.print_dict(items)
 
-            '''
-            rng = np.random.RandomState(1234)
-            policy_N     = config['N']
-            baseline_N   = config['N']
-            baseline_Nin = self.policy_net.N + len(config['actions'])
-            baseline_Win_mask = np.zeros((baseline_Nin, 3*baseline_N))
-            p_in = 0.5
-            baseline_Win_mask[:policy_N] = (rng.uniform(size=baseline_Win_mask[:policy_N].shape) < p_in)
-            #baseline_Win = 1/np.sqrt(p_in*baseline)
-            '''
+        # Time step
+        self.dt = dt if dt is not None else self.config['dt']
+        print(f"Using dt = {self.dt}")
 
-            K = config['baseline_p0']*config['N']
-            baseline_Nin = self.policy_net.N + len(config['actions'])
-            self.baseline_config = {
-                'Nin':      baseline_Nin,
-                'N':        config['baseline_N'],
-                'Nout':     1,
-                'p0':       config['baseline_p0'],
-                'rho':      config['baseline_rho'],
-                'f_out':    'linear',
-                'Win':      config['baseline_Win']*np.sqrt(K)/baseline_Nin,
-                'Win_mask': config['baseline_Win_mask'],
-                'bout':     config['baseline_bout'],
-                'fix':      config['baseline_fix'],
-                'L2_r':     config['baseline_L2_r'],
-                'L1_Wrec':  config['L1_Wrec'],
-                'L2_Wrec':  config['L2_Wrec'],
-                'alpha':    alpha
-                }
-            if self.baseline_config['bout'] is None:
-                self.baseline_config['bout'] = config['R_ABORTED']
+        # Leak
+        alpha = self.dt / self.config['tau']
 
-            # Network type
-            Network = Networks[self.config.get('baseline_network_type',
-                                               self.config['network_type'])]
-            self.baseline_net = Network(self.baseline_config,
-                                        seed=config['baseline_seed'], name='baseline')
+        # Which parameters to load?
+        params_p = save['best_policy_params'] if load == 'best' else save['current_policy_params']
+        params_b = save['best_baseline_params'] if load == 'best' else save['current_baseline_params']
 
-        #=================================================================================
-        # PG setup
-        #=================================================================================
+        # Masks
+        masks_p = save.get('policy_masks', {})
+        masks_b = save.get('baseline_masks', {})
 
+        # Policy network
+        self.policy_config = save['policy_config']
+        self.policy_config['alpha'] = alpha
+
+        Network = Networks[self.config['network_type']]
+        self.policy_net = Network(self.policy_config, params=params_p,
+                                  masks=masks_p, name='policy')
+
+        # Baseline network
+        self.baseline_config = save['baseline_config']
+        self.baseline_config['alpha'] = alpha
+
+        Network = Networks[self.config.get('baseline_network_type',
+                                          self.config['network_type'])]
+        self.baseline_net = Network(self.baseline_config, params=params_b,
+                                    masks=masks_b, name='baseline')
+
+    def _create_new_model(self, config, dt, seed):
+        """Create new model from config."""
+        self.config = config
+
+        # Time step
+        self.dt = dt if dt is not None else config['dt']
+        print(f"Using dt = {self.dt}")
+
+        # Leak
+        alpha = self.dt / config['tau']
+
+        # Policy network configuration
+        K = config['p0'] * config['N']
+        self.policy_config = {
+            'Nin': config['Nin'],
+            'N': config['N'],
+            'Nout': config['Nout'],
+            'p0': config['p0'],
+            'rho': config['rho'],
+            'f_out': 'softmax',
+            'Win': config['Win'] * np.sqrt(K) / config['Nin'],
+            'Win_mask': config['Win_mask'],
+            'fix': config['fix'],
+            'L2_r': config['L2_r'],
+            'L1_Wrec': config['L1_Wrec'],
+            'L2_Wrec': config['L2_Wrec'],
+            'alpha': alpha
+        }
+
+        Network = Networks[config['network_type']]
+        self.policy_net = Network(self.policy_config, seed=config['policy_seed'], name='policy')
+
+        # Baseline network configuration
+        K = config['baseline_p0'] * config['N']
+        baseline_Nin = self.policy_net.N + len(config['actions'])
+        self.baseline_config = {
+            'Nin': baseline_Nin,
+            'N': config['baseline_N'],
+            'Nout': 1,
+            'p0': config['baseline_p0'],
+            'rho': config['baseline_rho'],
+            'f_out': 'linear',
+            'Win': config['baseline_Win'] * np.sqrt(K) / baseline_Nin,
+            'Win_mask': config['baseline_Win_mask'],
+            'bout': config['baseline_bout'] if config['baseline_bout'] is not None else config['R_ABORTED'],
+            'fix': config['baseline_fix'],
+            'L2_r': config['baseline_L2_r'],
+            'L1_Wrec': config['L1_Wrec'],
+            'L2_Wrec': config['L2_Wrec'],
+            'alpha': alpha
+        }
+
+        Network = Networks[config.get('baseline_network_type', config['network_type'])]
+        self.baseline_net = Network(self.baseline_config, seed=config['baseline_seed'], name='baseline')
+
+    def _setup_training(self):
+        """Setup training parameters and RNG."""
         # Network structure
-        self.Nin  = self.config['Nin']
-        self.N    = self.config['N']
+        self.Nin = self.config['Nin']
+        self.N = self.config['N']
         self.Nout = self.config['Nout']
-
-        # Number of actions
         self.n_actions = len(self.config['actions'])
 
-        # Recurrent noise, scaled by `2*tau/dt`
-        self.scaled_var_rec = (2*self.config['tau']/self.dt) * self.config['var_rec']
-        self.scaled_baseline_var_rec = ((2*self.config['tau']/self.dt)
-                                        * self.config['baseline_var_rec'])
+        # Recurrent noise scaling
+        self.scaled_var_rec = (2 * self.config['tau'] / self.dt) * self.config['var_rec']
+        self.scaled_baseline_var_rec = ((2 * self.config['tau'] / self.dt) *
+                                        self.config['baseline_var_rec'])
 
-        # Run trials continuously?
+        # Run mode
         self.mode = self.config['mode']
-        if self.mode == 'continuous':
-            self.step_0_states = self.policy_net.func_step_0(True)
 
-        # Maximum length of a trial
-        self.Tmax = int(self.config['tmax']/self.config['dt']) + 1
+        # Maximum trial length
+        self.Tmax = int(self.config['tmax'] / self.dt) + 1
 
-        # Discount future reward
+        # Reward discounting
         if np.isfinite(self.config['tau_reward']):
-            self.alpha_reward = self.dt/self.config['tau_reward']
-            def discount_factor(t):
-                return np.exp(-t*self.alpha_reward)
+            self.alpha_reward = self.dt / self.config['tau_reward']
+            self.discount_factor = lambda t: np.exp(-t * self.alpha_reward)
         else:
-            def discount_factor(t):
-                return 1
-        self.discount_factor = discount_factor
+            self.discount_factor = lambda t: 1
 
-        # Reward on aborted trials
+        # Terminal/aborted rewards
         self.abort_on_last_t = self.config.get('abort_on_last_t', True)
-        if 'R_TERMINAL' in self.config and self.config['R_TERMINAL'] is not None:
-            self.R_TERMINAL = self.config['R_TERMINAL']
-        else:
+        self.R_TERMINAL = self.config.get('R_TERMINAL', self.config['R_ABORTED'])
+        if self.R_TERMINAL is None:
             self.R_TERMINAL = self.config['R_ABORTED']
         self.R_ABORTED = self.config['R_ABORTED']
 
         # Random number generator
-        self.rng = nptools.get_rng(seed, __name__)
+        self.rng = nptools.get_rng(seed=1, loc=__name__)
 
-        # Compile functions
-        self.policy_step_0   = self.policy_net.func_step_0()
-        self.policy_step_t   = self.policy_net.func_step_t()
-        self.baseline_step_0 = self.baseline_net.func_step_0()
-        self.baseline_step_t = self.baseline_net.func_step_t()
-
-        # Performance
+        # Performance tracker
         self.Performance = self.config['Performance']
 
     def make_noise(self, size, var=0):
+        """Generate Gaussian noise."""
         if var > 0:
-            return theanotools.asarray(self.rng.normal(scale=np.sqrt(var), size=size))
-        return theanotools.zeros(size)
+            return torch.randn(*size, device=self.device) * np.sqrt(var)
+        return torch.zeros(*size, device=self.device)
 
-    def run_trials(self, trials, init=None, init_b=None,
-                   return_states=False, perf=None, task=None, progress_bar=False,
-                   p_dropout=0):
+    def run_trials(self, trials, init=None, init_b=None, return_states=False,
+                   perf=None, progress_bar=False):
+        """
+        Run trials through the network.
+
+        Parameters
+        ----------
+        trials : int or list
+            Number of trials to run, or list of trial conditions.
+        init : tuple, optional
+            Initial policy network state (z, x).
+        init_b : tuple, optional
+            Initial baseline network state (z, x).
+        return_states : bool
+            Whether to return internal states.
+        perf : Performance, optional
+            Performance tracker.
+        progress_bar : bool
+            Whether to show progress bar.
+
+        Returns
+        -------
+        results : dict
+            Dictionary containing trial data.
+        """
         if isinstance(trials, list):
             n_trials = len(trials)
         else:
             n_trials = trials
-            trials   = []
-
-        if return_states:
-            run_value_network = True
-        else:
-            run_value_network = False
+            trials = []
 
         # Storage
-        U   = theanotools.zeros((self.Tmax, n_trials, self.Nin))
-        Z   = theanotools.zeros((self.Tmax, n_trials, self.Nout))
-        A   = theanotools.zeros((self.Tmax, n_trials, self.n_actions))
-        R   = theanotools.zeros((self.Tmax, n_trials))
-        M   = theanotools.zeros((self.Tmax, n_trials))
-        Z_b = theanotools.zeros((self.Tmax, n_trials))
+        U = torch.zeros(self.Tmax, n_trials, self.Nin, device=self.device)
+        Z = torch.zeros(self.Tmax, n_trials, self.Nout, device=self.device)
+        A = torch.zeros(self.Tmax, n_trials, self.n_actions, device=self.device)
+        R = torch.zeros(self.Tmax, n_trials, device=self.device)
+        M = torch.zeros(self.Tmax, n_trials, device=self.device)
+        Z_b = torch.zeros(self.Tmax, n_trials, device=self.device)
 
         # Noise
-        Q   = self.make_noise((self.Tmax, n_trials, self.policy_net.noise_dim),
-                               self.scaled_var_rec)
-        Q_b = self.make_noise((self.Tmax, n_trials, self.baseline_net.noise_dim),
-                               self.scaled_baseline_var_rec)
+        Q = self.make_noise((self.Tmax, n_trials, self.policy_net.N), self.scaled_var_rec)
+        Q_b = self.make_noise((self.Tmax, n_trials, self.baseline_net.N), self.scaled_baseline_var_rec)
 
-        x_t   = theanotools.zeros((1, self.policy_net.N))
-        x_t_b = theanotools.zeros((1, self.baseline_net.N))
-
-        # Dropout mask
-        #D   = np.ones((self.Tmax, n_trials, self.policy_net.N))
-        #D_b = np.ones((self.Tmax, n_trials, self.baseline_net.N))
-        #if p_dropout > 0:
-        #    D   -= (np.uniform(size=D.shape) < p_dropout)
-        #    D_b -= (np.uniform(size=D_b.shape) < p_dropout)
-
-        # Firing rates
+        # Firing rates storage
         if return_states:
-            r_policy = theanotools.zeros((self.Tmax, n_trials, self.policy_net.N))
-            r_value  = theanotools.zeros((self.Tmax, n_trials, self.baseline_net.N))
+            r_policy = torch.zeros(self.Tmax, n_trials, self.policy_net.N, device=self.device)
+            r_value = torch.zeros(self.Tmax, n_trials, self.baseline_net.N, device=self.device)
 
-        # Keep track of initial conditions
-        if self.mode == 'continuous':
-            x0   = theanotools.zeros((n_trials, self.policy_net.N))
-            x0_b = theanotools.zeros((n_trials, self.baseline_net.N))
-        else:
-            x0   = None
-            x0_b = None
-
-        # Performance
+        # Performance tracking
         if perf is None:
             perf = self.Performance()
 
-        # Setup progress bar
+        # Progress bar
         if progress_bar:
-            progress_inc  = max(int(n_trials/50), 1)
-            progress_half = 25*progress_inc
+            progress_inc = max(int(n_trials / 50), 1)
+            progress_half = 25 * progress_inc
             if progress_half > n_trials:
                 progress_half = -1
             utils.println("[ PolicyGradient.run_trials ] ")
 
-        for n in xrange(n_trials):
-            if progress_bar and n % progress_inc == 0:
-                if n == 0:
-                    utils.println("0")
-                elif n == progress_half:
-                    utils.println("50")
+        with torch.no_grad():
+            for n in range(n_trials):
+                if progress_bar and n % progress_inc == 0:
+                    if n == 0:
+                        utils.println("0")
+                    elif n == progress_half:
+                        utils.println("50")
+                    else:
+                        utils.println("|")
+
+                # Initialize trial
+                if hasattr(self.task, 'start_trial'):
+                    self.task.start_trial()
+
+                # Generate trial condition
+                if n < len(trials):
+                    trial = trials[n]
                 else:
-                    utils.println("|")
+                    trial = self.task.get_condition(self.rng, self.dt)
+                    trials.append(trial)
 
-            # Initialize trial
-            if hasattr(self.task, 'start_trial'):
-                self.task.start_trial()
+                # t = 0
+                t = 0
+                if init is None:
+                    z_t, x_t = self.policy_net.step_0()
+                    z_t_b, x_t_b = self.baseline_net.step_0()
+                else:
+                    z_t, x_t = init
+                    z_t_b, x_t_b = init_b
 
-            # Generate trials
-            if n < len(trials):
-                trial = trials[n]
-            else:
-                trial = self.task.get_condition(self.rng, self.dt)
-                trials.append(trial)
+                Z[t, n] = z_t
+                # Baseline has Nout=1, squeeze to scalar
+                Z_b[t, n] = z_t_b.squeeze() if z_t_b.dim() > 0 else z_t_b
 
-            #-----------------------------------------------------------------------------
-            # Time t = 0
-            #-----------------------------------------------------------------------------
-
-            t = 0
-            if init is None:
-                z_t,   x_t[0]   = self.policy_step_0()
-                z_t_b, x_t_b[0] = self.baseline_step_0()
-            else:
-                z_t,   x_t[0]   = init
-                z_t_b, x_t_b[0] = init_b
-            Z[t,n]   = z_t
-            Z_b[t,n] = z_t_b
-
-            # Save initial condition
-            if x0 is not None:
-                x0[n]   = x_t[0]
-                x0_b[n] = x_t_b[0]
-
-            # Save states
-            if return_states:
-                r_policy[t,n] = self.policy_net.firing_rate(x_t[0])
-                r_value[t,n]  = self.baseline_net.firing_rate(x_t_b[0])
-
-            # Select action
-            a_t = theanotools.choice(self.rng, self.Nout, p=np.reshape(z_t, (self.Nout,)))
-            A[t,n,a_t] = 1
-
-            #a_t = self.rng.normal(np.reshape(z_t, (self.Nout,)), self.sigma)
-            #A[t,n,0] = a_t
-
-            # Trial step
-            U[t,n], R[t,n], status = self.task.get_step(self.rng, self.dt,
-                                                        trial, t+1, a_t)
-            u_t    = U[t,n]
-            M[t,n] = 1
-
-            # Noise
-            q_t   = Q[t,n]
-            q_t_b = Q_b[t,n]
-
-            #-----------------------------------------------------------------------------
-            # Time t > 0
-            #-----------------------------------------------------------------------------
-
-            for t in xrange(1, self.Tmax):
-                # Aborted episode
-                if not status['continue']:
-                    break
-
-                # Policy
-                z_t, x_t[0] = self.policy_step_t(u_t[None,:], q_t[None,:], x_t)
-                Z[t,n] = z_t
-
-                # Baseline
-                r_t = self.policy_net.firing_rate(x_t[0])
-                u_t_b = np.concatenate((r_t, A[t-1,n]), axis=-1)
-                z_t_b, x_t_b[0] = self.baseline_step_t(u_t_b[None,:],
-                                                       q_t_b[None,:],
-                                                       x_t_b)
-                Z_b[t,n] = z_t_b
-
-                # Firing rates
                 if return_states:
-                    r_policy[t,n] = self.policy_net.firing_rate(x_t[0])
-                    r_value[t,n]  = self.baseline_net.firing_rate(x_t_b[0])
-
-                    #W = self.policy_net.get_values()['Wout']
-                    #b = self.policy_net.get_values()['bout']
-                    #V = r_policy[t,n].dot(W) + b
-                    #print(t)
-                    #print(V)
-                    #print(np.exp(V))
+                    r_policy[t, n] = self.policy_net.firing_rate(x_t)
+                    r_value[t, n] = self.baseline_net.firing_rate(x_t_b)
 
                 # Select action
-                a_t = theanotools.choice(self.rng, self.Nout,
-                                         p=np.reshape(z_t, (self.Nout,)))
-                A[t,n,a_t] = 1
+                z_t_np = z_t.cpu().numpy().reshape(self.Nout)
+                a_t = self.rng.choice(self.Nout, p=z_t_np)
+                A[t, n, a_t] = 1
 
-                #a_t = self.rng.normal(np.reshape(z_t, (self.Nout,)), self.sigma)
-                #A[t,n,0] = a_t
+                # Task step
+                u_t_np, r_t, status = self.task.get_step(self.rng, self.dt, trial, t+1, a_t)
+                U[t, n] = torch.FloatTensor(u_t_np).to(self.device)
+                R[t, n] = r_t
+                M[t, n] = 1
 
-                # Trial step
-                if self.abort_on_last_t and t == self.Tmax-1:
-                    U[t,n] = 0
-                    R[t,n] = self.R_TERMINAL
-                    status = {'continue': False, 'reward': R[t,n]}
-                else:
-                    U[t,n], R[t,n], status = self.task.get_step(self.rng, self.dt,
-                                                                trial, t+1, a_t)
-                R[t,n] *= self.discount_factor(t)
+                # t > 0
+                for t in range(1, self.Tmax):
+                    if not status['continue']:
+                        break
 
-                u_t    = U[t,n]
-                M[t,n] = 1
+                    # Policy network step
+                    u_t = U[t-1, n:n+1]
+                    q_t = Q[t, n:n+1]
+                    x_t = x_t.unsqueeze(0)
+                    z_t, x_t = self.policy_net.step_t(u_t, q_t, x_t)
+                    x_t = x_t.squeeze(0)
+                    Z[t, n] = z_t
 
-                # Noise
-                q_t   = Q[t,n]
-                q_t_b = Q_b[t,n]
+                    # Baseline network step
+                    r_t_policy = self.policy_net.firing_rate(x_t)
+                    u_t_b = torch.cat([r_t_policy, A[t-1, n]], dim=-1).unsqueeze(0)
+                    q_t_b = Q_b[t, n:n+1]
+                    x_t_b = x_t_b.unsqueeze(0)
+                    z_t_b, x_t_b = self.baseline_net.step_t(u_t_b, q_t_b, x_t_b)
+                    x_t_b = x_t_b.squeeze(0)
+                    # Baseline has Nout=1, squeeze to scalar
+                    Z_b[t, n] = z_t_b.squeeze() if z_t_b.dim() > 0 else z_t_b
 
-            #-----------------------------------------------------------------------------
+                    if return_states:
+                        r_policy[t, n] = r_t_policy
+                        r_value[t, n] = self.baseline_net.firing_rate(x_t_b)
 
-            # Update performance
-            perf.update(trial, status)
+                    # Select action
+                    z_t_np = z_t.cpu().numpy().reshape(self.Nout)
+                    a_t = self.rng.choice(self.Nout, p=z_t_np)
+                    A[t, n, a_t] = 1
 
-            # Save next state if necessary
-            if self.mode == 'continuous':
-                init   = self.policy_step_t(u_t[None,:], q_t[None,:], x_t)
-                init_b = self.baseline_step_t(u_t_b[None,:], q_t_b[None,:], x_t_b)
+                    # Task step
+                    if self.abort_on_last_t and t == self.Tmax - 1:
+                        U[t, n] = 0
+                        R[t, n] = self.R_TERMINAL
+                        status = {'continue': False, 'reward': R[t, n].item()}
+                    else:
+                        u_t_np, r_t, status = self.task.get_step(self.rng, self.dt, trial, t+1, a_t)
+                        U[t, n] = torch.FloatTensor(u_t_np).to(self.device)
+                        R[t, n] = r_t * self.discount_factor(t)
+
+                    M[t, n] = 1
+
+                # Update performance
+                perf.update(trial, status)
+
         if progress_bar:
             print("100")
 
-        #---------------------------------------------------------------------------------
-
-        rvals = [U, Q, Q_b, Z, Z_b, A, R, M, init, init_b, x0, x0_b, perf]
+        # Return results
+        results = {
+            'U': U, 'Q': Q, 'Q_b': Q_b, 'Z': Z, 'Z_b': Z_b,
+            'A': A, 'R': R, 'M': M, 'perf': perf
+        }
         if return_states:
-            rvals += [r_policy, r_value]
+            results['r_policy'] = r_policy
+            results['r_value'] = r_value
 
-        return rvals
-
-    def func_update_policy(self, Tmax, use_x0=False, accumulators=None):
-        U = tensor.tensor3('U') # Inputs
-        Q = tensor.tensor3('Q') # Noise
-
-        if use_x0:
-            x0_ = tensor.matrix('x0_')
-        else:
-            x0  = self.policy_net.params['x0']
-            x0_ = tensor.alloc(x0, U.shape[1], x0.shape[0])
-
-        log_z_0  = self.policy_net.get_outputs_0(x0_, log=True)
-        r, log_z = self.policy_net.get_outputs(U, Q, x0_, log=True)
-
-        # Learning rate
-        lr = tensor.scalar('lr')
-
-        A = tensor.tensor3('A')
-        R = tensor.matrix('R')
-        b = tensor.matrix('b')
-        M = tensor.matrix('M')
-
-        logpi_0 = tensor.sum(log_z_0*A[0], axis=-1)*M[0]
-        logpi_t = tensor.sum(log_z*A[1:],  axis=-1)*M[1:]
-
-        # Entropy
-        #entropy_0 = tensor.sum(tensor.exp(log_z_0)*log_z_0, axis=-1)*M[0]
-        #entropy_t = tensor.sum(tensor.exp(log_z)*log_z, axis=-1)*M[1:]
-        #entropy   = (tensor.sum(entropy_0) + tensor.sum(entropy_t))/tensor.sum(M)
-
-        #def f(x):
-        #    return -x**2/2/self.sigma**2
-
-        #logpi_0 = tensor.sum(f(A[0] - z_0), axis=-1)*M[0]
-        #logpi_t = tensor.sum(f(A[1:] - z), axis=-1)*M[1:]
-
-        # Enforce causality
-        Mcausal = theanotools.zeros((Tmax-1, Tmax-1))
-        for i in xrange(Mcausal.shape[0]):
-            Mcausal[i,i:] = 1
-        Mcausal = theanotools.shared(Mcausal, 'Mcausal')
-
-        J0 = logpi_0*R[0]
-        J0 = tensor.mean(J0)
-        J  = (logpi_t.T).dot(Mcausal).dot(R[1:]*M[1:])
-        J  = tensor.nlinalg.trace(J)/J.shape[0]
-
-        J += J0
-
-        # Second term
-        Jb0 = logpi_0*b[0]
-        Jb0 = tensor.mean(Jb0)
-        Jb  = logpi_t*b[1:]
-        Jb  = tensor.mean(tensor.sum(Jb, axis=0))
-
-        J -= Jb0 + Jb
-
-        # Objective function
-        obj = -J + self.policy_net.get_regs(x0_, r, M)# + 0.0005*entropy
-
-        # SGD
-        self.policy_sgd = Adam(self.policy_net.trainables, accumulators=accumulators)
-        if self.policy_net.type == 'simple':
-            i = self.policy_net.index('Wrec')
-            grads = tensor.grad(obj, self.policy_net.trainables)
-            grads[i] += self.policy_net.get_dOmega_dWrec(-J, r)
-            norm, grads, updates = self.policy_sgd.get_updates(obj, lr, grads=grads)
-        else:
-            norm, grads, updates = self.policy_sgd.get_updates(obj, lr)
-
-        if use_x0:
-            args = [x0_]
-        else:
-            args = []
-        args += [U, Q, A, R, b, M, lr]
-
-        return theano.function(args, norm, updates=updates)
-
-    def func_update_baseline(self, use_x0=False, accumulators=None):
-        U  = tensor.tensor3('U')
-        R  = tensor.matrix('R')
-        R_ = R.reshape((R.shape[0], R.shape[1], 1))
-        Q  = tensor.tensor3('Q')
-
-        if use_x0:
-            x0_ = tensor.matrix('x0_')
-        else:
-            x0  = self.baseline_net.params['x0']
-            x0_ = tensor.alloc(x0, U.shape[1], x0.shape[0])
-
-        z_0   = self.baseline_net.get_outputs_0(x0_)
-        r, z  = self.baseline_net.get_outputs(U, Q, x0_)
-        z_all = tensor.concatenate([z_0.reshape((1, z_0.shape[0], z_0.shape[1])), z],
-                                   axis=0)
-
-        # Learning rate
-        lr = tensor.scalar('lr')
-
-        # Reward prediction error
-        M    = tensor.matrix('M')
-        L2   = tensor.sum((tensor.sqr(z_all[:,:,0] - R))*M)/tensor.sum(M)
-        RMSE = tensor.sqrt(L2)
-
-        # Objective function
-        obj = L2 + self.baseline_net.get_regs(x0_, r, M)
-
-        # SGD
-        self.baseline_sgd = Adam(self.baseline_net.trainables, accumulators=accumulators)
-        if self.baseline_net.type == 'simple':
-            i = self.baseline_net.index('Wrec')
-            grads = tensor.grad(obj, self.baseline_net.trainables)
-            grads[i] += self.baseline_net.get_dOmega_dWrec(L2, r)
-            norm, grads, updates = self.baseline_sgd.get_updates(obj, lr, grads=grads)
-        else:
-            norm, grads, updates = self.baseline_sgd.get_updates(obj, lr)
-
-        if use_x0:
-            args = [x0_]
-        else:
-            args = []
-        args += [U, Q, R, M, lr]
-
-        return theano.function(args, [z_all[:,:,0], norm, RMSE], updates=updates)
+        return results
 
     def train(self, savefile, recover=False):
-        """
-        Train network.
-
-        """
-        #=================================================================================
-        # Parameters
-        #=================================================================================
-
-        max_iter     = self.config['max_iter']
-        lr           = self.config['lr']
-        baseline_lr  = self.config['baseline_lr']
-        n_gradient   = self.config['n_gradient']
+        """Train the policy and baseline networks."""
+        # Training parameters
+        max_iter = self.config['max_iter']
+        lr = self.config['lr']
+        baseline_lr = self.config['baseline_lr']
+        n_gradient = self.config['n_gradient']
         n_validation = self.config['n_validation']
-        checkfreq    = self.config['checkfreq']
+        checkfreq = self.config['checkfreq']
 
-        if self.mode == 'continuous':
-            print("[ PolicyGradient.train ] Continuous mode.")
-            use_x0 = True
-        else:
-            use_x0 = False
-
-        # GPU?
-        if theanotools.get_processor_type() == 'gpu':
-            gpu = 'yes'
-        else:
-            gpu = 'no'
+        use_x0 = (self.mode == 'continuous')
 
         # Print settings
         items = OrderedDict()
-        items['GPU']                      = gpu
-        items['Network type (policy)']    = self.config['network_type']
-        items['Network type (baseline)']  = self.config.get('baseline_network_type',
-                                                            self.config['network_type'])
-        items['N (policy)']               = self.config['N']
-        items['N (baseline)']             = self.config['baseline_N']
-        items['Conn. prob. (policy)']     = self.config['p0']
-        items['Conn. prob. (baseline)']   = self.config['baseline_p0']
-        items['dt']                       = str(self.dt) + ' ms'
-        items['tau_reward']               = str(self.config['tau_reward']) + ' ms'
-        items['var_rec (policy)']         = self.config['var_rec']
-        items['var_rec (baseline)']       = self.config['baseline_var_rec']
-        items['Learning rate (policy)']   = self.config['lr']
-        items['Learning rate (baseline)'] = self.config['baseline_lr']
-        items['Max time steps']           = self.Tmax
-        items['Num. trials (gradient)']   = self.config['n_gradient']
-        items['Num. trials (validation)'] = self.config['n_validation']
+        items['Device'] = str(self.device)
+        items['Network type (policy)'] = self.config['network_type']
+        items['Network type (baseline)'] = self.config.get('baseline_network_type',
+                                                           self.config['network_type'])
+        items['N (policy)'] = self.config['N']
+        items['N (baseline)'] = self.config['baseline_N']
+        items['Conn. prob. (policy)'] = self.config['p0']
+        items['Conn. prob. (baseline)'] = self.config['baseline_p0']
+        items['dt'] = f"{self.dt} ms"
+        items['tau_reward'] = f"{self.config['tau_reward']} ms"
+        items['var_rec (policy)'] = self.config['var_rec']
+        items['var_rec (baseline)'] = self.config['baseline_var_rec']
+        items['Learning rate (policy)'] = lr
+        items['Learning rate (baseline)'] = baseline_lr
+        items['Max time steps'] = self.Tmax
+        items['Num. trials (gradient)'] = n_gradient
+        items['Num. trials (validation)'] = n_validation
         utils.print_dict(items)
 
-        #=================================================================================
-        # Setup
-        #=================================================================================
+        # Optimizers
+        policy_optimizer = optim.Adam(self.policy_net.get_trainable_params(), lr=lr)
+        baseline_optimizer = optim.Adam(self.baseline_net.get_trainable_params(), lr=baseline_lr)
 
-        if recover:
+        # Initialize training state
+        if recover and hasattr(self, 'save'):
             print("Resume training.")
-            update_policy   = self.func_update_policy(self.Tmax, use_x0,
-                                                      accumulators=self.save['net_sgd'])
-            update_baseline = self.func_update_baseline(use_x0,
-                                                        accumulators=self.save['baseline_sgd'])
-
-            # Resume training from here
             iter_start = self.save['iter']
-            print("Last saved was after {} updates.".format(self.save['iter']))
+            print(f"Last saved was after {self.save['iter']} updates.")
 
-            # Random number generator
-            print("Resetting RNG state.")
             self.rng.set_state(self.save['rng_state'])
 
-            # Keep track of best results
-            best_iter            = self.save['best_iter']
-            best_reward          = self.save['best_reward']
-            best_perf            = self.save['best_perf']
-            best_params          = self.save['best_policy_params']
+            best_iter = self.save['best_iter']
+            best_reward = self.save['best_reward']
+            best_perf = self.save['best_perf']
+            best_policy_params = self.save['best_policy_params']
             best_baseline_params = self.save['best_baseline_params']
 
-            # Initial states
-            init   = self.save['init']
-            init_b = self.save['init_b']
-
-            # Training history
-            perf             = self.save['perf']
             training_history = self.save['training_history']
-            trials_tot       = self.save['trials_tot']
+            trials_tot = self.save['trials_tot']
+
+            # Restore optimizer states if available
+            if 'policy_optimizer_state' in self.save:
+                policy_optimizer.load_state_dict(self.save['policy_optimizer_state'])
+            if 'baseline_optimizer_state' in self.save:
+                baseline_optimizer.load_state_dict(self.save['baseline_optimizer_state'])
         else:
-            update_policy   = self.func_update_policy(self.Tmax, use_x0)
-            update_baseline = self.func_update_baseline(use_x0)
-
-            # Start training from here
             iter_start = 0
-
-            # Keep track of best results
-            best_iter   = -1
+            best_iter = -1
             best_reward = -np.inf
-            best_perf   = None
-            best_params = self.policy_net.get_values()
-            best_baseline_params = self.baseline_net.get_values()
-
-            # Initial states
-            init   = None
-            init_b = None
-
-            # Performance history
-            perf             = None
+            best_perf = None
+            best_policy_params = self.policy_net.get_state_dict_numpy()
+            best_baseline_params = self.baseline_net.get_state_dict_numpy()
             training_history = []
-            trials_tot       = 0
+            trials_tot = 0
 
-        #=================================================================================
-        # Train
-        #=================================================================================
-
+        # Training loop
         if hasattr(self.task, 'start_session'):
             self.task.start_session(self.rng)
 
-        grad_norms_policy   = []
+        grad_norms_policy = []
         grad_norms_baseline = []
 
         tstart = datetime.datetime.now()
+
         try:
-            for iter_ in xrange(iter_start, max_iter+1):
+            for iter_ in range(iter_start, max_iter + 1):
+                # Validation
                 if iter_ % checkfreq == 0 or iter_ == max_iter:
-                    if hasattr(self.task, 'n_validation'):
-                        n_validation = self.task.n_validation
                     if n_validation > 0:
-                        #-----------------------------------------------------------------
-                        # Validation
-                        #-----------------------------------------------------------------
-
-                        # Report
                         elapsed = utils.elapsed_time(tstart)
-                        print("After {} updates ({})".format(iter_, elapsed))
+                        print(f"After {iter_} updates ({elapsed})")
 
-                        # RNG state
+                        # Save RNG state
                         rng_state = self.rng.get_state()
 
-                        # Trials
-                        trials = [self.task.get_condition(self.rng, self.dt)
-                                  for i in xrange(n_validation)]
+                        # Generate validation trials
+                        val_trials = [self.task.get_condition(self.rng, self.dt)
+                                     for _ in range(n_validation)]
 
-                        # Run trials
-                        (U, Q, Q_b, Z, Z_b, A, R, M, init_, init_b_, x0_, x0_b_,
-                         perf_) = self.run_trials(trials, progress_bar=True)
+                        # Run validation
+                        val_results = self.run_trials(val_trials, progress_bar=True)
+                        perf = val_results['perf']
+
                         if hasattr(self.task, 'update'):
-                            self.task.update(perf_)
+                            self.task.update(perf)
 
-                        # Termination condition
+                        # Check termination
                         terminate = False
                         if hasattr(self.task, 'terminate'):
-                            if self.task.terminate(perf_):
+                            if self.task.terminate(perf):
                                 terminate = True
 
-                        # Save
-                        mean_reward = np.sum(R*M)/n_validation
-                        record = {
-                            'iter':        iter_,
-                            'mean_reward': mean_reward,
-                            'n_trials':    trials_tot,
-                            'perf':        perf_
-                            }
-                        if mean_reward > best_reward or terminate:
-                            best_iter   = iter_
-                            best_reward = mean_reward
-                            best_perf   = perf_
-                            best_params          = self.policy_net.get_values()
-                            best_baseline_params = self.baseline_net.get_values()
+                        # Compute mean reward
+                        mean_reward = torch.sum(val_results['R'] * val_results['M']).item() / n_validation
 
+                        # Save if best
+                        record = {
+                            'iter': iter_,
+                            'mean_reward': mean_reward,
+                            'n_trials': trials_tot,
+                            'perf': perf
+                        }
+
+                        if mean_reward > best_reward or terminate:
+                            best_iter = iter_
+                            best_reward = mean_reward
+                            best_perf = perf
+                            best_policy_params = self.policy_net.get_state_dict_numpy()
+                            best_baseline_params = self.baseline_net.get_state_dict_numpy()
                             record['new_best'] = True
-                            training_history.append(record)
                         else:
                             record['new_best'] = False
-                            training_history.append(record)
 
-                        # Save
+                        training_history.append(record)
+
+                        # Save checkpoint
                         save = {
-                            'iter':                    iter_,
-                            'config':                  self.config,
-                            'policy_config':           self.policy_net.config,
-                            'baseline_config':         self.baseline_net.config,
-                            'policy_masks':            self.policy_net.get_masks(),
-                            'baseline_masks':          self.baseline_net.get_masks(),
-                            'current_policy_params':   self.policy_net.get_values(),
-                            'current_baseline_params': self.baseline_net.get_values(),
-                            'best_iter':               best_iter,
-                            'best_reward':             best_reward,
-                            'best_perf':               best_perf,
-                            'best_policy_params':      best_params,
-                            'best_baseline_params':    best_baseline_params,
-                            'rng_state':               rng_state,
-                            'init':                    init,
-                            'init_b':                  init_b,
-                            'perf':                    perf,
-                            'training_history':        training_history,
-                            'trials_tot':              trials_tot,
-                            'net_sgd':                 self.policy_sgd.get_values(),
-                            'baseline_sgd':            self.baseline_sgd.get_values()
-                            }
+                            'iter': iter_,
+                            'config': self.config,
+                            'policy_config': self.policy_config,
+                            'baseline_config': self.baseline_config,
+                            'policy_masks': self.policy_net.masks,
+                            'baseline_masks': self.baseline_net.masks,
+                            'current_policy_params': self.policy_net.get_state_dict_numpy(),
+                            'current_baseline_params': self.baseline_net.get_state_dict_numpy(),
+                            'best_iter': best_iter,
+                            'best_reward': best_reward,
+                            'best_perf': best_perf,
+                            'best_policy_params': best_policy_params,
+                            'best_baseline_params': best_baseline_params,
+                            'rng_state': rng_state,
+                            'training_history': training_history,
+                            'trials_tot': trials_tot,
+                            'policy_optimizer_state': policy_optimizer.state_dict(),
+                            'baseline_optimizer_state': baseline_optimizer.state_dict()
+                        }
                         utils.save(savefile, save)
 
-                        # Reward
+                        # Display results
                         items = OrderedDict()
-                        items['Best reward'] = '{} (iteration {})'.format(best_reward,
-                                                                          best_iter)
-                        items['Mean reward'] = '{}'.format(mean_reward)
+                        items['Best reward'] = f'{best_reward} (iteration {best_iter})'
+                        items['Mean reward'] = f'{mean_reward}'
 
-                        # Performance
-                        if perf_ is not None:
-                            items.update(perf_.display(output=False))
+                        if perf is not None:
+                            items.update(perf.display(output=False))
 
                         # Value prediction error
-                        V = np.zeros_like(R)
-                        for k in xrange(V.shape[0]):
-                            V[k] = np.sum(R[k:]*M[k:], axis=0)
-                        error = np.sqrt(np.sum((Z_b - V)**2*M)/np.sum(M))
-                        items['Prediction error'] = '{}'.format(error)
+                        V = torch.zeros_like(val_results['R'])
+                        for k in range(V.shape[0]):
+                            V[k] = torch.sum(val_results['R'][k:] * val_results['M'][k:], dim=0)
+                        error = torch.sqrt(torch.sum((val_results['Z_b'] - V)**2 * val_results['M']) /
+                                          torch.sum(val_results['M'])).item()
+                        items['Prediction error'] = f'{error}'
 
-                        # Gradient norms
-                        if len(grad_norms_policy) > 0:
-                            if DEBUG:
-                                items['|grad| (policy)']   = [len(grad_norms_policy)] + [f(grad_norms_policy)
-                                                              for f in [np.min, np.median, np.max]]
-                                items['|grad| (baseline)'] = [len(grad_norms_baseline)] + [f(grad_norms_baseline)
-                                                              for f in [np.min, np.median, np.max]]
-                            grad_norms_policy   = []
-                            grad_norms_baseline = []
-
-                        # Print
                         utils.print_dict(items)
 
-                        # Target reward reached
+                        # Check termination conditions
                         if best_reward >= self.config['target_reward']:
                             print("Target reward reached.")
                             return
 
-                        # Terminate
-                        if terminate:
-                            print("Termination criterion satisfied.")
-                            return
-                    else:
-                        '''
-                        #-----------------------------------------------------------------
-                        # Ongoing learning
-                        #-----------------------------------------------------------------
-
-                        if not training_history:
-                            training_history.append(perf)
-                        if training_history[0] is None:
-                            training_history[0] = perf
-
-                        # Save
-                        save = {
-                            'iter':                    iter,
-                            'config':                  self.config,
-                            'policy_config':           self.policy_net.config,
-                            'baseline_config':         self.baseline_net.config,
-                            'masks_p':                 self.policy_net.get_masks(),
-                            'masks_b':                 self.baseline_net.get_masks(),
-                            'current_policy_params':   self.policy_net.get_values(),
-                            'current_baseline_params': self.baseline_net.get_values(),
-                            'rng_state':               self.rng.get_state(),
-                            'init':                    init,
-                            'init_b':                  init_b,
-                            'perf':                    perf,
-                            'training_history':        training_history,
-                            'trials_tot':              trials_tot,
-                            'net_sgd':                 self.policy_sgd.get_values(),
-                            'baseline_sgd':            self.baseline_sgd.get_values()
-                            }
-                        utils.save(savefile, save)
-                        '''
-                        if perf is not None:
-                            perf.display()
-
-                        # Termination condition
-                        terminate = False
-                        if hasattr(self.task, 'terminate'):
-                            if perf is not None and self.task.terminate(perf):
-                                terminate = True
-                        '''
-                        # Report
-                        if iter % 100 == 1:
-                            elapsed = utils.elapsed_time(tstart)
-                            print("After {} updates ({})".format(iter, elapsed))
-                            if perf is not None:
-                                perf.display()
-                        '''
-                        # Terminate
                         if terminate:
                             print("Termination criterion satisfied.")
                             return
 
                 if iter_ == max_iter:
-                    print("Reached maximum number of iterations ({}).".format(iter_))
+                    print(f"Reached maximum number of iterations ({iter_}).")
                     sys.exit(0)
 
-                #-------------------------------------------------------------------------
-                # Run trials
-                #-------------------------------------------------------------------------
-
-                # Trial conditions
-                if hasattr(self.task, 'n_gradient'):
-                    n_gradient = self.task.n_gradient
-                trials = [self.task.get_condition(self.rng, self.dt)
-                          for i in xrange(n_gradient)]
+                # Training step
+                # Generate training trials
+                train_trials = [self.task.get_condition(self.rng, self.dt)
+                               for _ in range(n_gradient)]
 
                 # Run trials
-                (U, Q, Q_b, Z, Z_b, A, R, M, init, init_b, x0, x0_b,
-                 perf, r_policy, r_value) = self.run_trials(trials,
-                                                            init=init, init_b=init_b,
-                                                            return_states=True, perf=perf)
-
-                #-------------------------------------------------------------------------
-                # Update baseline
-                #-------------------------------------------------------------------------
-
-                baseline_inputs = np.concatenate((r_policy, A), axis=-1)
-
-                # Compute return
-                R_b = np.zeros_like(R)
-                for k in xrange(R.shape[0]):
-                    R_b[k] = np.sum(R[k:]*M[k:], axis=0)
-
-                if use_x0:
-                    args = [x0_b]
-                else:
-                    args = []
-                args += [baseline_inputs[:-1], Q_b, R_b, M, baseline_lr]
-                b, norm_b, rmse = update_baseline(*args)
-                #print("Prediction error = {}".format(rmse))
-
-                norm_b = float(norm_b)
-                #print("norm_b = {}".format(norm_b))
-                if np.isfinite(norm_b):
-                    grad_norms_baseline.append(float(norm_b))
-
-                #-------------------------------------------------------------------------
-                # Update policy
-                #-------------------------------------------------------------------------
-
-                if use_x0:
-                    args = [x0]
-                else:
-                    args = []
-                args += [U[:-1], Q, A, R, b, M, lr]
-                norm = update_policy(*args)
-
-                norm = float(norm)
-                #print("norm = {}".format(norm))
-                if np.isfinite(norm):
-                    grad_norms_policy.append(norm)
+                train_results = self.run_trials(train_trials, return_states=True)
 
                 trials_tot += n_gradient
 
+                # Update baseline network
+                self._update_baseline(train_results, baseline_optimizer)
+
+                # Update policy network
+                self._update_policy(train_results, policy_optimizer)
+
         except KeyboardInterrupt:
-            print("Training interrupted by user during iteration {}.".format(iter_))
+            print(f"Training interrupted by user during iteration {iter_}.")
             sys.exit(0)
+
+    def _update_baseline(self, results, optimizer):
+        """Update baseline network."""
+        # Prepare inputs (policy firing rates + previous actions)
+        r_policy = results['r_policy']
+        A = results['A']
+        R = results['R']
+        M = results['M']
+
+        baseline_inputs = torch.cat([r_policy, A], dim=-1)
+
+        # Compute returns
+        T, B = R.shape
+        R_b = torch.zeros_like(R)
+        for k in range(T):
+            R_b[k] = torch.sum(R[k:] * M[k:], dim=0)
+
+        # Forward pass through baseline network
+        baseline_inputs_trimmed = baseline_inputs[:-1]  # Remove last timestep
+        B_size = baseline_inputs_trimmed.shape[1]
+        x0 = self.baseline_net.x0.unsqueeze(0).expand(B_size, -1)
+
+        z_pred, states_b = self.baseline_net(
+            baseline_inputs_trimmed,
+            results['Q_b'][:-1],
+            x0
+        )
+
+        # Initial prediction
+        z_0, _ = self.baseline_net.step_0(x0)
+
+        # Combine predictions - handle dimensions correctly
+        # z_0 might be (B, 1) or (B,), z_pred is (T-1, B, 1) or (T-1, B)
+        if z_0.dim() == 2:
+            z_0 = z_0.squeeze(-1)  # (B, 1) -> (B)
+        if z_pred.dim() == 3:
+            z_pred = z_pred.squeeze(-1)  # (T-1, B, 1) -> (T-1, B)
+
+        z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)  # (T, B)
+
+        # Loss
+        loss = torch.sum((z_all - R_b)**2 * M) / torch.sum(M)
+        loss += self.baseline_net.get_regs(x0, states_b, M[:-1])
+
+        # Backward and optimize
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    def _update_policy(self, results, optimizer):
+        """Update policy network."""
+        U = results['U']
+        A = results['A']
+        R = results['R']
+        M = results['M']
+        Z_b = results['Z_b']
+
+        # Forward pass through policy network
+        U_trimmed = U[:-1]
+        Q_trimmed = results['Q'][:-1]  # Also trim noise to match
+        B_size = U_trimmed.shape[1]
+        x0 = self.policy_net.x0.unsqueeze(0).expand(B_size, -1)
+
+        z_pred, states = self.policy_net(U_trimmed, Q_trimmed, x0)
+
+        # Initial prediction
+        z_0_raw, _ = self.policy_net.step_0(x0)
+
+        # Compute log probabilities
+        r_0 = self.policy_net.firing_rate(x0)
+        log_z_0 = self.policy_net.log_output(r_0)
+
+        r_pred = self.policy_net.firing_rate(states)
+        log_z_pred = torch.stack([
+            self.policy_net.log_output(r_pred[t]) for t in range(r_pred.shape[0])
+        ])
+
+        # Log probabilities of selected actions
+        logpi_0 = torch.sum(log_z_0 * A[0], dim=-1) * M[0]
+        logpi_t = torch.sum(log_z_pred * A[1:], dim=-1) * M[1:]
+
+        # Construct causal mask
+        T_minus_1 = logpi_t.shape[0]
+        Mcausal = torch.zeros(T_minus_1, T_minus_1, device=self.device)
+        for i in range(T_minus_1):
+            Mcausal[i, i:] = 1
+
+        # Policy gradient objective
+        J0 = torch.mean(logpi_0 * R[0])
+        J = torch.trace(torch.matmul(logpi_t.t(), torch.matmul(Mcausal, R[1:] * M[1:]))) / B_size
+        J = J0 + J
+
+        # Subtract baseline
+        Jb0 = torch.mean(logpi_0 * Z_b[0])
+        Jb = torch.mean(torch.sum(logpi_t * Z_b[1:], dim=0))
+        J = J - Jb0 - Jb
+
+        # Add regularization
+        loss = -J + self.policy_net.get_regs(x0, states, M[:-1])
+
+        # Backward and optimize
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
