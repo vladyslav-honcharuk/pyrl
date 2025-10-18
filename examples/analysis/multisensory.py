@@ -4,8 +4,8 @@ import os
 
 import numpy as np
 
-from pyrl_torch import fittools, runtools, tasktools, utils
-from pyrl_torch.figtools import Figure
+from pyrl import fittools, runtools, tasktools, utils
+from pyrl.figtools import Figure
 
 #/////////////////////////////////////////////////////////////////////////////////////////
 
