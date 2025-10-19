@@ -1369,7 +1369,7 @@ def psychometric(trialsfile, plots=None, **kwargs):
 
     # Convert to P(right)
     for k, choices_by_coh in results.items():
-        cohs = np.sort(choices_by_coh.keys())
+        cohs = np.sort(list(choices_by_coh.keys()))
         p1   = np.zeros(len(cohs))
         for i, coh in enumerate(cohs):
             choices = choices_by_coh[coh]

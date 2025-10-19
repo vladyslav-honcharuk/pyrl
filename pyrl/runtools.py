@@ -44,16 +44,9 @@ def run(action, trials, pg, scratchpath, dt_save=None):
         trialsfile = behaviorfile(scratchpath)
 
         results = pg.run_trials(trials, progress_bar=True)
-        U = results['U']
-        Z = results['Z']
-        Z_b = results['Z_b']
         A = results['A']
         R = results['R']
         M = results['M']
-        init = results['init']
-        init_b = results['init_b']
-        states_0 = results['states_0']
-        states_0_b = results['states_0_b']
         perf = results['perf']
 
         for trial in trials:
@@ -70,18 +63,14 @@ def run(action, trials, pg, scratchpath, dt_save=None):
         A = results['A']
         R = results['R']
         M = results['M']
-        init = results['init']
-        init_b = results['init_b']
-        states_0 = results['states_0']
-        states_0_b = results['states_0_b']
         perf = results['perf']
-        states = results['states']
-        states_b = results['states_b']
+        r_policy = results['r_policy']
+        r_value = results['r_value']
 
         for trial in trials:
             trial['time'] = trial['time'][::inc]
         save = [trials, U[::inc], Z[::inc], Z_b[::inc], A[::inc], R[::inc],
-                M[::inc], perf, states[::inc], states_b[::inc]]
+                M[::inc], perf, r_policy[::inc], r_value[::inc]]
     else:
         raise ValueError(action)
 

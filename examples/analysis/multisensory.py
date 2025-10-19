@@ -46,7 +46,7 @@ def psychometric(trialsfile, plot, **kwargs):
     p_decision = {}
     p_high     = {}
     for mod in decision_by_freq:
-        freqs[mod]      = np.sort(high_by_freq[mod].keys())
+        freqs[mod]      = np.sort(list(high_by_freq[mod].keys()))
         p_decision[mod] = np.zeros(len(freqs[mod]))
         p_high[mod]     = np.zeros(len(freqs[mod]))
         for i, freq in enumerate(freqs[mod]):

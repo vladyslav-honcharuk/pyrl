@@ -13,6 +13,9 @@ from   os.path import join
 
 import numpy as np
 
+# Add parent directory to path so we can import pyrl
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from pyrl import utils
 
 #=========================================================================================
@@ -121,7 +124,7 @@ ntrain     = 5
 #-----------------------------------------------------------------------------------------
 
 model     = 'rdm_fixed'
-ntrials_b = 50000 
+ntrials_b = 50 
 ntrials_a = 50
 
 if 'rdm_fixed' in args:

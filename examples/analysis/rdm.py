@@ -211,7 +211,7 @@ def psychometric(trialsfile, m, plot, plot_decision=True, **kwargs):
         else:
             decision_by_coh[coh].append(0)
 
-    cohs       = np.sort(right_by_coh.keys())
+    cohs       = np.sort(list(right_by_coh.keys()))
     p_decision = np.zeros(len(cohs))
     p_right    = np.zeros(len(cohs))
     for i, coh in enumerate(cohs):
@@ -298,7 +298,7 @@ def chronometric(trialsfile, plot, **kwargs):
 
     # Correct trials
     print("Correct trials.")
-    correct_cohs = np.sort(correct_rt_by_coh.keys())
+    correct_cohs = np.sort(list(correct_rt_by_coh.keys()))
     correct_rt   = np.zeros(len(correct_cohs))
     correct_idx  = []
     correct_tot  = 0
@@ -314,7 +314,7 @@ def chronometric(trialsfile, plot, **kwargs):
 
     # Error trials
     print("Error trials.")
-    error_cohs = np.sort(error_rt_by_coh.keys())
+    error_cohs = np.sort(list(error_rt_by_coh.keys()))
     error_rt   = np.zeros(len(error_cohs))
     error_idx  = []
     error_tot  = 0
@@ -432,13 +432,17 @@ def sort(trialsfile, plots, unit=None, network='p', **kwargs):
 
         # Before
         n_b = Rn[:t0].shape[0]
-        r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1]   += Rn[:t0]
-        n_r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1] += Mn[:t0]
+        idx_start = Ntime-1-n_b
+        idx_end = Ntime-1
+        r_by_cond_stimulus[cond][idx_start:idx_end] = np.add(r_by_cond_stimulus[cond][idx_start:idx_end], Rn[:t0])
+        n_r_by_cond_stimulus[cond][idx_start:idx_end] = np.add(n_r_by_cond_stimulus[cond][idx_start:idx_end], Mn[:t0])
 
         # After
         n_a = Rn[t0:].shape[0]
-        r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a]   += Rn[t0:]
-        n_r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a] += Mn[t0:]
+        idx_start = Ntime-1
+        idx_end = Ntime-1+n_a
+        r_by_cond_stimulus[cond][idx_start:idx_end] = np.add(r_by_cond_stimulus[cond][idx_start:idx_end], Rn[t0:])
+        n_r_by_cond_stimulus[cond][idx_start:idx_end] = np.add(n_r_by_cond_stimulus[cond][idx_start:idx_end], Mn[t0:])
 
     for cond in r_by_cond_stimulus:
         r_by_cond_stimulus[cond] = utils.div(r_by_cond_stimulus[cond],
@@ -481,13 +485,17 @@ def sort(trialsfile, plots, unit=None, network='p', **kwargs):
 
         # Before
         n_b = Rn[:t0].shape[0]
-        r_by_cond_choice[cond][Ntime-1-n_b:Ntime-1]   += Rn[:t0]
-        n_r_by_cond_choice[cond][Ntime-1-n_b:Ntime-1] += Mn[:t0]
+        idx_start = Ntime-1-n_b
+        idx_end = Ntime-1
+        r_by_cond_choice[cond][idx_start:idx_end] = np.add(r_by_cond_choice[cond][idx_start:idx_end], Rn[:t0])
+        n_r_by_cond_choice[cond][idx_start:idx_end] = np.add(n_r_by_cond_choice[cond][idx_start:idx_end], Mn[:t0])
 
         # After
         n_a = Rn[t0:].shape[0]
-        r_by_cond_choice[cond][Ntime-1:Ntime-1+n_a]   += Rn[t0:]
-        n_r_by_cond_choice[cond][Ntime-1:Ntime-1+n_a] += Mn[t0:]
+        idx_start = Ntime-1
+        idx_end = Ntime-1+n_a
+        r_by_cond_choice[cond][idx_start:idx_end] = np.add(r_by_cond_choice[cond][idx_start:idx_end], Rn[t0:])
+        n_r_by_cond_choice[cond][idx_start:idx_end] = np.add(n_r_by_cond_choice[cond][idx_start:idx_end], Mn[t0:])
 
     for cond in r_by_cond_choice:
         r_by_cond_choice[cond] = utils.div(r_by_cond_choice[cond],
@@ -646,13 +654,17 @@ def sort_return(trialsfile, plots=None, **kwargs):
 
         # Before
         n_b = Rn[:t0].shape[0]
-        r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1]   += Rn[:t0]
-        n_r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1] += Mn[:t0]
+        idx_start = Ntime-1-n_b
+        idx_end = Ntime-1
+        r_by_cond_stimulus[cond][idx_start:idx_end] = np.add(r_by_cond_stimulus[cond][idx_start:idx_end], Rn[:t0])
+        n_r_by_cond_stimulus[cond][idx_start:idx_end] = np.add(n_r_by_cond_stimulus[cond][idx_start:idx_end], Mn[:t0])
 
         # After
         n_a = Rn[t0:].shape[0]
-        r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a]   += Rn[t0:]
-        n_r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a] += Mn[t0:]
+        idx_start = Ntime-1
+        idx_end = Ntime-1+n_a
+        r_by_cond_stimulus[cond][idx_start:idx_end] = np.add(r_by_cond_stimulus[cond][idx_start:idx_end], Rn[t0:])
+        n_r_by_cond_stimulus[cond][idx_start:idx_end] = np.add(n_r_by_cond_stimulus[cond][idx_start:idx_end], Mn[t0:])
 
     for cond in r_by_cond_stimulus:
         r_by_cond_stimulus[cond] = utils.div(r_by_cond_stimulus[cond],
@@ -695,13 +707,17 @@ def sort_return(trialsfile, plots=None, **kwargs):
 
         # Before
         n_b = Rn[:t0].shape[0]
-        r_by_cond_choice[cond][Ntime-1-n_b:Ntime-1]   += Rn[:t0]
-        n_r_by_cond_choice[cond][Ntime-1-n_b:Ntime-1] += Mn[:t0]
+        idx_start = Ntime-1-n_b
+        idx_end = Ntime-1
+        r_by_cond_choice[cond][idx_start:idx_end] = np.add(r_by_cond_choice[cond][idx_start:idx_end], Rn[:t0])
+        n_r_by_cond_choice[cond][idx_start:idx_end] = np.add(n_r_by_cond_choice[cond][idx_start:idx_end], Mn[:t0])
 
         # After
         n_a = Rn[t0:].shape[0]
-        r_by_cond_choice[cond][Ntime-1:Ntime-1+n_a]   += Rn[t0:]
-        n_r_by_cond_choice[cond][Ntime-1:Ntime-1+n_a] += Mn[t0:]
+        idx_start = Ntime-1
+        idx_end = Ntime-1+n_a
+        r_by_cond_choice[cond][idx_start:idx_end] = np.add(r_by_cond_choice[cond][idx_start:idx_end], Rn[t0:])
+        n_r_by_cond_choice[cond][idx_start:idx_end] = np.add(n_r_by_cond_choice[cond][idx_start:idx_end], Mn[t0:])
 
     for cond in r_by_cond_choice:
         r_by_cond_choice[cond] = utils.div(r_by_cond_choice[cond],

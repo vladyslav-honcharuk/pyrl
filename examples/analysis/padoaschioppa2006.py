@@ -380,7 +380,7 @@ def sort_epoch(behaviorfile, activityfile, epoch, offers, plots, units=None, net
     for k, v in unit_types.items():
         numbers[v] += 1
 
-    n_tot = np.sum(numbers.values())
+    n_tot = np.sum(list(numbers.values()))
     for k, v in numbers.items():
         print("{}: {}/{} = {}%".format(k, v, n_tot, 100*v/n_tot))
 

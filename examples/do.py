@@ -22,6 +22,7 @@ import sys
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
+import torch
 from pyrl import utils
 from pyrl.model import Model
 
@@ -42,9 +43,9 @@ def main():
     parser.add_argument('--suffix', type=str, default='',
                        help='Suffix for output files')
     parser.add_argument('--gpu', action='store_true', default=False,
-                       help='Use GPU if available')
+                       help='Use GPU if available (auto-detects CUDA or MPS)')
     parser.add_argument('--device', type=str, default=None,
-                       help='Specific device (e.g., cuda:0)')
+                       help='Specific device (e.g., cuda, cuda:0, mps, cpu)')
 
     args = parser.parse_args()
 
@@ -64,7 +65,14 @@ def main():
     if args.device:
         device = args.device
     elif args.gpu:
-        device = 'mps'
+        # Auto-detect best available GPU
+        if torch.cuda.is_available():
+            device = 'cuda'
+        elif torch.backends.mps.is_available():
+            device = 'mps'
+        else:
+            print("Warning: --gpu specified but no GPU available, using CPU")
+            device = 'cpu'
     else:
         device = 'cpu'
 
