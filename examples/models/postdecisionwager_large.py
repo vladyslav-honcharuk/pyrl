@@ -191,7 +191,7 @@ def get_step(rng, dt, trial, t, a):
 
     return u, reward, status
 
-from pyrl_torch.performance import PerformancePostdecisionWager as Performance
+from pyrl.performance import PerformancePostdecisionWager as Performance
 
 def terminate(perf):
     p_answer  = perf.n_answer/perf.n_trials

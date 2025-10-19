@@ -174,13 +174,13 @@ def sort(trialsfile, plots, units=None, network='p', **kwargs):
 
         # Before
         n_b = Rn[:t0].shape[0]
-        r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1]   += Rn[:t0]
-        n_r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1] += Mn[:t0]
+        r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1] = np.add(r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1], Rn[:t0])
+        n_r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1] = np.add(n_r_by_cond_stimulus[cond][Ntime-1-n_b:Ntime-1], Mn[:t0])
 
         # After
         n_a = Rn[t0:].shape[0]
-        r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a]   += Rn[t0:]
-        n_r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a] += Mn[t0:]
+        r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a] = np.add(r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a], Rn[t0:])
+        n_r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a] = np.add(n_r_by_cond_stimulus[cond][Ntime-1:Ntime-1+n_a], Mn[t0:])
 
     for cond in r_by_cond_stimulus:
         r_by_cond_stimulus[cond] = utils.div(r_by_cond_stimulus[cond],

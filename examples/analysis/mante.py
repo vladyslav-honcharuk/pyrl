@@ -326,13 +326,13 @@ def sort(trialsfile, all_plots, units=None, network='p', **kwargs):
 
                 # Before
                 n_b = Rnu[:t0].shape[0]
-                trials_by_cond[cond]['r'][Ntime-1-n_b:Ntime-1,u] += Rnu[:t0]
-                trials_by_cond[cond]['n'][Ntime-1-n_b:Ntime-1,u] += Mn[:t0]
+                trials_by_cond[cond]['r'][Ntime-1-n_b:Ntime-1,u] = np.add(trials_by_cond[cond]['r'][Ntime-1-n_b:Ntime-1,u], Rnu[:t0])
+                trials_by_cond[cond]['n'][Ntime-1-n_b:Ntime-1,u] = np.add(trials_by_cond[cond]['n'][Ntime-1-n_b:Ntime-1,u], Mn[:t0])
 
                 # After
                 n_a = Rnu[t0:].shape[0]
-                trials_by_cond[cond]['r'][Ntime-1:Ntime-1+n_a,u] += Rnu[t0:]
-                trials_by_cond[cond]['n'][Ntime-1:Ntime-1+n_a,u] += Mn[t0:]
+                trials_by_cond[cond]['r'][Ntime-1:Ntime-1+n_a,u] = np.add(trials_by_cond[cond]['r'][Ntime-1:Ntime-1+n_a,u], Rnu[t0:])
+                trials_by_cond[cond]['n'][Ntime-1:Ntime-1+n_a,u] = np.add(trials_by_cond[cond]['n'][Ntime-1:Ntime-1+n_a,u], Mn[t0:])
 
         # Average
         for cond in trials_by_cond:
@@ -602,13 +602,13 @@ def sort_statespace(trialsfile, all_plots, units=None, network='p', **kwargs):
 
                 # Before
                 n_b = Rnu[:t0].shape[0]
-                trials_by_cond[cond]['r'][Ntime-1-n_b:Ntime-1,u] += Rnu[:t0]
-                trials_by_cond[cond]['n'][Ntime-1-n_b:Ntime-1,u] += Mn[:t0]
+                trials_by_cond[cond]['r'][Ntime-1-n_b:Ntime-1,u] = np.add(trials_by_cond[cond]['r'][Ntime-1-n_b:Ntime-1,u], Rnu[:t0])
+                trials_by_cond[cond]['n'][Ntime-1-n_b:Ntime-1,u] = np.add(trials_by_cond[cond]['n'][Ntime-1-n_b:Ntime-1,u], Mn[:t0])
 
                 # After
                 n_a = Rnu[t0:].shape[0]
-                trials_by_cond[cond]['r'][Ntime-1:Ntime-1+n_a,u] += Rnu[t0:]
-                trials_by_cond[cond]['n'][Ntime-1:Ntime-1+n_a,u] += Mn[t0:]
+                trials_by_cond[cond]['r'][Ntime-1:Ntime-1+n_a,u] = np.add(trials_by_cond[cond]['r'][Ntime-1:Ntime-1+n_a,u], Rnu[t0:])
+                trials_by_cond[cond]['n'][Ntime-1:Ntime-1+n_a,u] = np.add(trials_by_cond[cond]['n'][Ntime-1:Ntime-1+n_a,u], Mn[t0:])
 
         # Average
         for cond in trials_by_cond:

@@ -120,13 +120,17 @@ def sort(trialsfile, plots, units=None, network='p', **kwargs):
 
         # Before
         n_b = Rn[:t0].shape[0]
-        trials_by_cond[cond]['r'][Ntime-1-n_b:Ntime-1] += Rn[:t0]
-        trials_by_cond[cond]['n'][Ntime-1-n_b:Ntime-1] += Mn[:t0]
+        idx_start = Ntime-1-n_b
+        idx_end = Ntime-1
+        trials_by_cond[cond]['r'][idx_start:idx_end] = np.add(trials_by_cond[cond]['r'][idx_start:idx_end], Rn[:t0])
+        trials_by_cond[cond]['n'][idx_start:idx_end] = np.add(trials_by_cond[cond]['n'][idx_start:idx_end], Mn[:t0])
 
         # After
         n_a = Rn[t0:].shape[0]
-        trials_by_cond[cond]['r'][Ntime-1:Ntime-1+n_a] += Rn[t0:]
-        trials_by_cond[cond]['n'][Ntime-1:Ntime-1+n_a] += Mn[t0:]
+        idx_start = Ntime-1
+        idx_end = Ntime-1+n_a
+        trials_by_cond[cond]['r'][idx_start:idx_end] = np.add(trials_by_cond[cond]['r'][idx_start:idx_end], Rn[t0:])
+        trials_by_cond[cond]['n'][idx_start:idx_end] = np.add(trials_by_cond[cond]['n'][idx_start:idx_end], Mn[t0:])
 
     # Average
     for cond in trials_by_cond:

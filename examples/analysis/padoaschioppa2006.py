@@ -327,13 +327,13 @@ def sort_epoch(behaviorfile, activityfile, epoch, offers, plots, units=None, net
 
             # Before
             n_b = r_n[:t0].shape[0]
-            events_by_cond[e][cond]['r'][Ntime-1-n_b:Ntime-1] += r_n[:t0]
-            events_by_cond[e][cond]['n'][Ntime-1-n_b:Ntime-1] += m_n[:t0]
+            events_by_cond[e][cond]['r'][Ntime-1-n_b:Ntime-1] = np.add(events_by_cond[e][cond]['r'][Ntime-1-n_b:Ntime-1], r_n[:t0])
+            events_by_cond[e][cond]['n'][Ntime-1-n_b:Ntime-1] = np.add(events_by_cond[e][cond]['n'][Ntime-1-n_b:Ntime-1], m_n[:t0])
 
             # After
             n_a = r_n[t0:].shape[0]
-            events_by_cond[e][cond]['r'][Ntime-1:Ntime-1+n_a] += r_n[t0:]
-            events_by_cond[e][cond]['n'][Ntime-1:Ntime-1+n_a] += m_n[t0:]
+            events_by_cond[e][cond]['r'][Ntime-1:Ntime-1+n_a] = np.add(events_by_cond[e][cond]['r'][Ntime-1:Ntime-1+n_a], r_n[t0:])
+            events_by_cond[e][cond]['n'][Ntime-1:Ntime-1+n_a] = np.add(events_by_cond[e][cond]['n'][Ntime-1:Ntime-1+n_a], m_n[t0:])
     print("Non-decision trials: {}/{}".format(n_nondecision, len(trials)))
 
     # Average trials
