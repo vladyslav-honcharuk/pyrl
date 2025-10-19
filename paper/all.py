@@ -25,12 +25,21 @@ from pyrl import utils
 p = argparse.ArgumentParser()
 p.add_argument('--simulate', action='store_true', default=False)
 p.add_argument('--gpu', dest='gpu', action='store_true', default=False)
+p.add_argument('--device', type=str, default=None,
+               help='Specific device (e.g., cuda, cuda:0, mps, cpu)')
+p.add_argument('--dt', type=float, default=0,
+               help='Time step (ms). Default: use config value')
+p.add_argument('--dt-save', type=float, default=0,
+               help='Time step for saving trial data (ms). Default: use dt value')
 p.add_argument('args', nargs='*')
 a = p.parse_args()
 
 simulate = a.simulate
 args     = a.args
 gpu      = a.gpu
+device   = a.device
+dt       = a.dt
+dt_save  = a.dt_save
 
 #=========================================================================================
 # Shared steps
@@ -76,6 +85,15 @@ def train(model, seed=None, main=False):
     if gpu:
         extra += ' --gpu'
 
+    if device:
+        extra += ' --device ' + device
+
+    if dt > 0:
+        extra += ' --dt ' + str(dt)
+
+    if dt_save > 0:
+        extra += ' --dt-save ' + str(dt_save)
+
     tstart = datetime.datetime.now()
     call("python3 {} {} train{}".format(join(dopath, 'do.py'),
                                        join(modelspath, model),
@@ -99,11 +117,21 @@ def do_action(model, action, analysis=None, seed=None, args=''):
     if seed is not None:
         args = '--suffix _s{0} '.format(seed) + args
 
-    call("python3 {} {} run {} {} {}".format(join(dopath, 'do.py'),
+    # Add global arguments
+    extra = ''
+    if device:
+        extra += ' --device ' + device
+    if dt > 0:
+        extra += ' --dt ' + str(dt)
+    if dt_save > 0:
+        extra += ' --dt-save ' + str(dt_save)
+
+    call("python3 {} {} run {} {} {} {}".format(join(dopath, 'do.py'),
                                             join(modelspath, model),
                                             join(analysispath, analysis),
                                             action,
-                                            args))
+                                            args,
+                                            extra))
 
 def trials(model, trialtype, ntrials, analysis=None, seed=None, args=''):
     do_action(model, 'trials-{} {}'.format(trialtype, ntrials),
