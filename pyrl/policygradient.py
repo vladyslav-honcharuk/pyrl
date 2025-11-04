@@ -18,7 +18,7 @@ from .networks import Networks
 class PolicyGradient:
     """Policy gradient algorithm for training recurrent neural networks."""
 
-    def __init__(self, Task, config_or_savefile, seed, dt=None, load='best', device=None):
+    def __init__(self, Task, config_or_savefile, seed, dt=None, load='best', device=None, kappa=0.0):
         self.task = Task()
 
         # Determine device
@@ -39,6 +39,10 @@ class PolicyGradient:
 
         # Setup
         self._setup_training()
+
+        self.kappa = kappa
+        self.eta_plus = 1 + kappa
+        self.eta_minus = 1 - kappa
 
     def _load_from_file(self, savefile, dt, load):
         """Load model from saved file."""
@@ -228,6 +232,12 @@ class PolicyGradient:
         M = torch.zeros(self.Tmax, n_trials, device=self.device)
         Z_b = torch.zeros(self.Tmax, n_trials, device=self.device)
 
+        # Storage for trial-level information (for risk-sensitive learning)
+        prob_l = torch.zeros(n_trials, device=self.device)
+        prob_r = torch.zeros(n_trials, device=self.device)
+        size_l = torch.zeros(n_trials, device=self.device)
+        size_r = torch.zeros(n_trials, device=self.device)
+
         # Noise
         Q = self.make_noise((self.Tmax, n_trials, self.policy_net.N), self.scaled_var_rec)
         Q_b = self.make_noise((self.Tmax, n_trials, self.baseline_net.N), self.scaled_baseline_var_rec)
@@ -269,6 +279,13 @@ class PolicyGradient:
                 else:
                     trial = self.task.get_condition(self.rng, self.dt)
                     trials.append(trial)
+
+                # Extract trial information if available (for risk-sensitive learning)
+                if 'prob_l' in trial:
+                    prob_l[n] = trial['prob_l']
+                    prob_r[n] = trial['prob_r']
+                    size_l[n] = trial['size_l']
+                    size_r[n] = trial['size_r']
 
                 # t = 0
                 t = 0
@@ -338,7 +355,7 @@ class PolicyGradient:
                     else:
                         u_t_np, r_t, status = self.task.get_step(self.rng, self.dt, trial, t+1, a_t)
                         U[t, n] = torch.FloatTensor(u_t_np).to(self.device)
-                        R[t, n] = r_t * self.discount_factor(t)
+                        R[t, n] = r_t *  1 #self.discount_factor(t)
 
                     M[t, n] = 1
 
@@ -351,7 +368,9 @@ class PolicyGradient:
         # Return results
         results = {
             'U': U, 'Q': Q, 'Q_b': Q_b, 'Z': Z, 'Z_b': Z_b,
-            'A': A, 'R': R, 'M': M, 'perf': perf
+            'A': A, 'R': R, 'M': M, 'perf': perf,
+            'prob_l': prob_l, 'prob_r': prob_r,
+            'size_l': size_l, 'size_r': size_r
         }
         if return_states:
             results['r_policy'] = r_policy
@@ -563,105 +582,323 @@ class PolicyGradient:
             sys.exit(0)
 
     def _update_baseline(self, results, optimizer):
-        """Update baseline network."""
-        # Prepare inputs (policy firing rates + previous actions)
+        """Update baseline (value) network using risk-sensitive TEMPORAL DIFFERENCE learning."""
+
+        # --- DEBUGGING: Initialize step counter if not exists ---
+        if not hasattr(self, '_debug_step'):
+            self._debug_step = 0
+        self._debug_step += 1
+        
+        # Only print detailed debug every N steps to avoid spam
+        debug_freq = 100
+        verbose_debug = (self._debug_step % debug_freq == 0)
+
+        # --- Extract relevant data from results ---
+        R = results['R']  # Shape (T, B), now contains UNDISCOUNTED r_t
+        M = results['M']  # Shape (T, B), mask
+
+        # --- DEBUG: Reward statistics ---
+        if verbose_debug:
+            print(f"\n{'='*80}")
+            print(f"BASELINE UPDATE DEBUG - Step {self._debug_step}, κ={self.kappa:.3f}")
+            print(f"{'='*80}")
+            print(f"Rewards R:")
+            print(f"  Shape: {R.shape}")
+            print(f"  Mean: {R.mean().item():.6f}")
+            print(f"  Std: {R.std().item():.6f}")
+            print(f"  Min: {R.min().item():.6f}")
+            print(f"  Max: {R.max().item():.6f}")
+            print(f"  Positive: {(R > 0).sum().item()}/{R.numel()} ({100*(R > 0).float().mean().item():.1f}%)")
+            print(f"  Negative: {(R < 0).sum().item()}/{R.numel()} ({100*(R < 0).float().mean().item():.1f}%)")
+            print(f"  Zero: {(R == 0).sum().item()}/{R.numel()}")
+
+        # --- Get baseline predictions V(s_t) ---
         r_policy = results['r_policy']
         A = results['A']
-        R = results['R']
-        M = results['M']
-
         baseline_inputs = torch.cat([r_policy, A], dim=-1)
-
-        # Compute returns
-        T, B = R.shape
-        R_b = torch.zeros_like(R)
-        for k in range(T):
-            R_b[k] = torch.sum(R[k:] * M[k:], dim=0)
-
-        # Forward pass through baseline network
-        baseline_inputs_trimmed = baseline_inputs[:-1]  # Remove last timestep
+        baseline_inputs_trimmed = baseline_inputs[:-1]
         B_size = baseline_inputs_trimmed.shape[1]
         x0 = self.baseline_net.x0.unsqueeze(0).expand(B_size, -1)
-
+        
         z_pred, states_b = self.baseline_net(
             baseline_inputs_trimmed,
             results['Q_b'][:-1],
             x0
         )
-
-        # Initial prediction
         z_0, _ = self.baseline_net.step_0(x0)
-
-        # Combine predictions - handle dimensions correctly
-        # z_0 might be (B, 1) or (B,), z_pred is (T-1, B, 1) or (T-1, B)
         if z_0.dim() == 2:
-            z_0 = z_0.squeeze(-1)  # (B, 1) -> (B)
+            z_0 = z_0.squeeze(-1)
         if z_pred.dim() == 3:
-            z_pred = z_pred.squeeze(-1)  # (T-1, B, 1) -> (T-1, B)
+            z_pred = z_pred.squeeze(-1)
+        
+        # z_all = V(s_t) for t=0..T-1
+        z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0) # Shape (T, B)
 
-        z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)  # (T, B)
+        # --- DEBUG: Value function statistics ---
+        if verbose_debug:
+            print(f"\nValue Function V(s):")
+            print(f"  Shape: {z_all.shape}")
+            print(f"  Mean: {z_all.mean().item():.6f}")
+            print(f"  Std: {z_all.std().item():.6f}")
+            print(f"  Min: {z_all.min().item():.6f}")
+            print(f"  Max: {z_all.max().item():.6f}")
 
-        # Loss
-        loss = torch.sum((z_all - R_b)**2 * M) / torch.sum(M)
-        loss += self.baseline_net.get_regs(x0, states_b, M[:-1])
+        # --- Compute the TD-error: δ_t = R_t + γ * V(s_{t+1}) - V(s_t) ---
+        if not hasattr(self, 'gamma'):
+            self.gamma = np.exp(-self.dt / self.config['tau_reward'])
+            print(f"\n*** Initialized gamma = {self.gamma:.6f} ***")
+        
+        V_s_t = z_all # Shape (T, B)
+        V_s_tplus1 = torch.cat([z_all[1:], torch.zeros_like(z_all[0:1])], dim=0)
+        delta = R + self.gamma * V_s_tplus1 - V_s_t
 
-        # Backward and optimize
+        # --- DEBUG: TD error statistics (BEFORE risk-sensitivity) ---
+        if verbose_debug:
+            print(f"\nTD Error δ (BEFORE risk-sensitivity):")
+            print(f"  Formula: δ = R + γV(s') - V(s)")
+            print(f"  γ = {self.gamma:.6f}")
+            print(f"  Mean: {delta.mean().item():.6f}")
+            print(f"  Std: {delta.std().item():.6f}")
+            print(f"  Min: {delta.min().item():.6f}")
+            print(f"  Max: {delta.max().item():.6f}")
+            print(f"  Positive δ: {(delta > 0).sum().item()}/{delta.numel()} ({100*(delta > 0).float().mean().item():.1f}%)")
+            print(f"  Negative δ: {(delta < 0).sum().item()}/{delta.numel()} ({100*(delta < 0).float().mean().item():.1f}%)")
+            
+            pos_deltas = delta[delta > 0]
+            neg_deltas = delta[delta < 0]
+            if len(pos_deltas) > 0:
+                print(f"  Positive δ - Mean: {pos_deltas.mean().item():.6f}, Max: {pos_deltas.max().item():.6f}")
+            if len(neg_deltas) > 0:
+                print(f"  Negative δ - Mean: {neg_deltas.mean().item():.6f}, Min: {neg_deltas.min().item():.6f}")
+
+        # --- Risk-Sensitive Transformation ---
+        eta_plus = 1.0 - self.kappa   # Dampen positive errors
+        eta_minus = 1.0 + self.kappa  # Amplify negative errors
+
+        # --- DEBUG: Risk-sensitivity parameters ---
+        if verbose_debug:
+            print(f"\nRisk-Sensitivity Parameters:")
+            print(f"  κ (kappa): {self.kappa:.6f}")
+            print(f"  η⁺ (eta_plus): {eta_plus:.6f}  [scales POSITIVE δ]")
+            print(f"  η⁻ (eta_minus): {eta_minus:.6f}  [scales NEGATIVE δ]")
+            print(f"  Interpretation:")
+            if self.kappa > 0:
+                print(f"    Risk-AVERSE: Amplify bad news (η⁻={eta_minus:.2f}x), dampen good news (η⁺={eta_plus:.2f}x)")
+            elif self.kappa < 0:
+                print(f"    Risk-SEEKING: Amplify good news (η⁺={eta_plus:.2f}x), dampen bad news (η⁻={eta_minus:.2f}x)")
+            else:
+                print(f"    Risk-NEUTRAL: No scaling")
+                
+            # Warning checks
+            if eta_plus < 0:
+                print(f"  ⚠️  WARNING: η⁺ < 0! Positive errors will flip sign!")
+            if eta_minus < 0:
+                print(f"  ⚠️  WARNING: η⁻ < 0! Negative errors will flip sign!")
+            if abs(eta_plus) > 2.0 or abs(eta_minus) > 2.0:
+                print(f"  ⚠️  WARNING: Extreme scaling factors (>2x) may cause instability!")
+        
+        delta_prime = torch.where(delta > 0,
+                                eta_plus * delta,
+                                eta_minus * delta)
+
+        # --- DEBUG: TD error statistics (AFTER risk-sensitivity) ---
+        if verbose_debug:
+            print(f"\nTD Error δ′ (AFTER risk-sensitivity):")
+            print(f"  Formula: δ′ = η⁺·δ if δ>0, else η⁻·δ")
+            print(f"  Mean: {delta_prime.mean().item():.6f}")
+            print(f"  Std: {delta_prime.std().item():.6f}")
+            print(f"  Min: {delta_prime.min().item():.6f}")
+            print(f"  Max: {delta_prime.max().item():.6f}")
+            
+            # Compare scaling effects
+            pos_mask = delta > 0
+            neg_mask = delta < 0
+            if pos_mask.any():
+                orig_pos = delta[pos_mask].abs().mean()
+                scaled_pos = delta_prime[pos_mask].abs().mean()
+                print(f"  Positive δ → δ′:")
+                print(f"    Original mean |δ|: {orig_pos.item():.6f}")
+                print(f"    Scaled mean |δ′|: {scaled_pos.item():.6f}")
+                print(f"    Ratio (scaled/orig): {(scaled_pos/orig_pos).item():.6f} (should be ≈{eta_plus:.6f})")
+                
+            if neg_mask.any():
+                orig_neg = delta[neg_mask].abs().mean()
+                scaled_neg = delta_prime[neg_mask].abs().mean()
+                print(f"  Negative δ → δ′:")
+                print(f"    Original mean |δ|: {orig_neg.item():.6f}")
+                print(f"    Scaled mean |δ′|: {scaled_neg.item():.6f}")
+                print(f"    Ratio (scaled/orig): {(scaled_neg/orig_neg).item():.6f} (should be ≈{eta_minus:.6f})")
+            
+            # Check for sign flips
+            sign_flips = ((delta > 0) & (delta_prime < 0)) | ((delta < 0) & (delta_prime > 0))
+            if sign_flips.any():
+                print(f"  ⚠️  SIGN FLIPS DETECTED: {sign_flips.sum().item()} errors changed sign!")
+            
+            # Overall effect
+            ratio = delta_prime.abs().mean() / (delta.abs().mean() + 1e-10)
+            print(f"  Overall magnitude ratio |δ′|/|δ|: {ratio.item():.6f}")
+
+        # --- Compute baseline loss ---
+        loss = torch.sum((delta_prime)**2 * M) / torch.sum(M)
+
+        # --- DEBUG: Loss statistics ---
+        if verbose_debug:
+            loss_unscaled = torch.sum(delta**2 * M) / torch.sum(M)
+            print(f"\nLoss:")
+            print(f"  Baseline loss (with risk-sensitivity): {loss.item():.6f}")
+            print(f"  Baseline loss (without risk-sensitivity): {loss_unscaled.item():.6f}")
+            print(f"  Ratio (risk/neutral): {(loss/loss_unscaled).item():.6f}")
+
+        reg = self.baseline_net.get_regs(x0, states_b, M[:-1])
+        if verbose_debug:
+            print(f"  Regularization: {reg.item():.6f}")
+            print(f"  Total loss: {(loss + reg).item():.6f}")
+        
+        loss += reg
+
+        # --- Gradient update ---
         optimizer.zero_grad()
         loss.backward()
+        
+        # --- DEBUG: Gradient statistics ---
+        if verbose_debug:
+            total_norm = 0
+            for p in self.baseline_net.parameters():
+                if p.grad is not None:
+                    total_norm += p.grad.data.norm(2).item() ** 2
+            total_norm = total_norm ** 0.5
+            print(f"  Gradient norm (baseline): {total_norm:.6f}")
+        
         optimizer.step()
 
+        # --- Store shared δ′ for policy update (detached) ---
+        results["delta_prime"] = delta_prime.detach()
+        results["Z_b"] = z_all.detach()
+        
+        # --- DEBUG: Summary ---
+        if verbose_debug:
+            print(f"{'='*80}\n")
+
+
     def _update_policy(self, results, optimizer):
-        """Update policy network."""
+        """Update policy network with risk-sensitive TD-ERROR (advantage)."""
+
+        # Use same debug counter as baseline
+        if not hasattr(self, '_debug_step'):
+            self._debug_step = 0
+        
+        debug_freq = 100
+        verbose_debug = (self._debug_step % debug_freq == 0)
+
+        # --- Extract relevant data ---
         U = results['U']
         A = results['A']
-        R = results['R']
         M = results['M']
-        Z_b = results['Z_b']
+        Q_trimmed = results['Q'][:-1]
+        delta_prime = results["delta_prime"]
 
-        # Forward pass through policy network
+        if verbose_debug:
+            print(f"\n{'='*80}")
+            print(f"POLICY UPDATE DEBUG - Step {self._debug_step}, κ={self.kappa:.3f}")
+            print(f"{'='*80}")
+            print(f"Advantage (delta_prime) from baseline:")
+            print(f"  Shape: {delta_prime.shape}")
+            print(f"  Mean: {delta_prime.mean().item():.6f}")
+            print(f"  Std: {delta_prime.std().item():.6f}")
+            print(f"  Min: {delta_prime.min().item():.6f}")
+            print(f"  Max: {delta_prime.max().item():.6f}")
+            print(f"  Positive: {(delta_prime > 0).float().mean().item()*100:.1f}%")
+            print(f"  Negative: {(delta_prime < 0).float().mean().item()*100:.1f}%")
+
+        # --- Forward pass through policy network ---
         U_trimmed = U[:-1]
-        Q_trimmed = results['Q'][:-1]  # Also trim noise to match
         B_size = U_trimmed.shape[1]
         x0 = self.policy_net.x0.unsqueeze(0).expand(B_size, -1)
-
         z_pred, states = self.policy_net(U_trimmed, Q_trimmed, x0)
-
-        # Initial prediction
-        z_0_raw, _ = self.policy_net.step_0(x0)
-
-        # Compute log probabilities
+        
         r_0 = self.policy_net.firing_rate(x0)
         log_z_0 = self.policy_net.log_output(r_0)
-
+        
         r_pred = self.policy_net.firing_rate(states)
         log_z_pred = torch.stack([
             self.policy_net.log_output(r_pred[t]) for t in range(r_pred.shape[0])
         ])
 
-        # Log probabilities of selected actions
+        # --- Compute log probabilities of chosen actions ---
         logpi_0 = torch.sum(log_z_0 * A[0], dim=-1) * M[0]
         logpi_t = torch.sum(log_z_pred * A[1:], dim=-1) * M[1:]
+        logpi_all = torch.cat([logpi_0.unsqueeze(0), logpi_t], dim=0)
+        
+        if verbose_debug:
+            print(f"\nLog-probabilities:")
+            print(f"  Shape: {logpi_all.shape}")
+            print(f"  Mean: {logpi_all.mean().item():.6f}")
+            print(f"  Std: {logpi_all.std().item():.6f}")
+            print(f"  Min: {logpi_all.min().item():.6f}")
+            print(f"  Max: {logpi_all.max().item():.6f}")
 
-        # Construct causal mask
-        T_minus_1 = logpi_t.shape[0]
-        Mcausal = torch.zeros(T_minus_1, T_minus_1, device=self.device)
-        for i in range(T_minus_1):
-            Mcausal[i, i:] = 1
+        # --- Policy gradient objective (TD Actor-Critic) ---
+        weighted_logpi = logpi_all * delta_prime * M
+        
+        if verbose_debug:
+            print(f"\nWeighted log-probs (log π · δ′):")
+            print(f"  Mean: {weighted_logpi.mean().item():.6f}")
+            print(f"  Sum: {weighted_logpi.sum().item():.6f}")
+            print(f"  This will be divided by batch size {B_size}")
+        
+        J = torch.sum(weighted_logpi) / B_size
 
-        # Policy gradient objective
-        J0 = torch.mean(logpi_0 * R[0])
-        J = torch.trace(torch.matmul(logpi_t.t(), torch.matmul(Mcausal, R[1:] * M[1:]))) / B_size
-        J = J0 + J
+        # Regularization
+        reg = self.policy_net.get_regs(x0, states, M[:-1])
+        loss = -J + reg
 
-        # Subtract baseline
-        Jb0 = torch.mean(logpi_0 * Z_b[0])
-        Jb = torch.mean(torch.sum(logpi_t * Z_b[1:], dim=0))
-        J = J - Jb0 - Jb
+        if verbose_debug:
+            print(f"\nPolicy Loss:")
+            print(f"  Objective J (before negation): {J.item():.6f}")
+            print(f"  Regularization: {reg.item():.6f}")
+            print(f"  Total loss (-J + reg): {loss.item():.6f}")
 
-        # Add regularization
-        loss = -J + self.policy_net.get_regs(x0, states, M[:-1])
-
-        # Backward and optimize
+        # --- Gradient update ---
         optimizer.zero_grad()
         loss.backward()
+
+        if verbose_debug or self.kappa != 0:
+            # Gradient diagnostics
+            total_grad_norm = 0
+            max_grad = 0
+            min_grad = float('inf')
+            nan_params, inf_params = [], []
+
+            for name, param in self.policy_net.named_parameters():
+                if param.grad is not None:
+                    grad_norm = param.grad.norm().item()
+                    total_grad_norm += grad_norm
+                    max_grad = max(max_grad, param.grad.abs().max().item())
+                    min_grad = min(min_grad, param.grad.abs().min().item())
+                    if torch.isnan(param.grad).any():
+                        nan_params.append(name)
+                    if torch.isinf(param.grad).any():
+                        inf_params.append(name)
+            
+            if verbose_debug:
+                print(f"\nGradient Statistics (policy):")
+                print(f"  Total norm: {total_grad_norm:.6f}")
+                print(f"  Max absolute: {max_grad:.6f}")
+                print(f"  Min absolute: {min_grad:.6f}")
+                
+                if nan_params:
+                    print(f"  ⚠️  NaN gradients in: {nan_params}")
+                if inf_params:
+                    print(f"  ⚠️  Inf gradients in: {inf_params}")
+            
+            # Extra warnings for extreme kappa values
+            if abs(self.kappa) > 0.5:
+                if nan_params or inf_params:
+                    print(f"\n⚠️⚠️⚠️  GRADIENT ISSUES WITH κ={self.kappa:.3f}  ⚠️⚠️⚠️")
+                if total_grad_norm > 1000:
+                    print(f"\n⚠️  Very large gradient norm ({total_grad_norm:.1f}) with κ={self.kappa:.3f}")
+
         optimizer.step()
+        
+        if verbose_debug:
+            print(f"{'='*80}\n")

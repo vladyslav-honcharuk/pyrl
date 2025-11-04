@@ -1,5 +1,5 @@
 """
-Setup script for pyrl_torch package.
+Setup script for pyrl package.
 """
 from setuptools import setup, find_packages
 
@@ -7,7 +7,7 @@ setup(
     name='pyrl_torch',
     version='0.1.0',
     description='PyTorch implementation of PyRL - Reward-based training of RNNs for cognitive tasks',
-    author='PyRL-Torch Contributors',
+    author='Vladyslav Honcharuk',
     python_requires='>=3.7',
     packages=find_packages(),
     install_requires=[

@@ -32,7 +32,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train and run cognitive task models')
     parser.add_argument('model_file', help='Model specification file')
     parser.add_argument('action', nargs='?', type=str, default='info',
-                       help='Action to perform (info/train/run)')
+                       help='Action to perform (info/train/retrain/run)')
     parser.add_argument('args', nargs='*', help='Additional arguments')
     parser.add_argument('--dt', type=float, default=0,
                        help='Time step (ms). Default: use config value')
@@ -46,6 +46,12 @@ def main():
                        help='Use GPU if available (auto-detects CUDA or MPS)')
     parser.add_argument('--device', type=str, default=None,
                        help='Specific device (e.g., cuda, cuda:0, mps, cpu)')
+    parser.add_argument('--kappa', type=float, default=None,
+                       help='Risk-sensitivity parameter: -1 (risk-averse) to +1 (risk-seeking)')
+    parser.add_argument('--pretrained', type=str, default=None,
+                       help='Path to pre-trained model (for retrain action)')
+    parser.add_argument('--retrain-iter', type=int, default=None,
+                       help='Number of iterations for retraining (default: use model config)')
 
     args = parser.parse_args()
 
@@ -136,7 +142,32 @@ def main():
         # Train model
         model = Model(modelfile)
         recover = 'recover' in action_args
-        model.train(savefile, seed, recover=recover, device=device)
+        model.train(savefile, seed, recover=recover, device=device, kappa=args.kappa)
+
+    elif action == 'retrain':
+        # Retrain model with new kappa value
+        if args.kappa is None:
+            print("Error: --kappa is required for retrain action")
+            sys.exit(1)
+
+        # Determine pretrained file
+        if args.pretrained:
+            pretrained_file = args.pretrained
+        else:
+            # Default: use the base model name (without any suffix) for pretrained file
+            base_name = os.path.splitext(os.path.basename(modelfile))[0]
+            # Look in the directory without suffix (the original pre-trained model)
+            pretrained_datapath = os.path.join(workpath, 'data', base_name)
+            pretrained_file = os.path.join(pretrained_datapath, base_name + '.pkl')
+
+        if not os.path.exists(pretrained_file):
+            print(f"Error: Pre-trained file not found: {pretrained_file}")
+            print("Please specify --pretrained or train a model with kappa=0 first")
+            sys.exit(1)
+
+        model = Model(modelfile)
+        model.retrain(pretrained_file, savefile, args.kappa,
+                     max_iter=args.retrain_iter, device=device)
 
     elif action == 'run':
         # Get analysis script
