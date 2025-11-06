@@ -41,8 +41,8 @@ class PolicyGradient:
         self._setup_training()
 
         self.kappa = kappa
-        self.eta_plus = 1 + kappa
-        self.eta_minus = 1 - kappa
+        self.eta_plus = 1 - kappa
+        self.eta_minus = 1 + kappa
 
     def _load_from_file(self, savefile, dt, load):
         """Load model from saved file."""
@@ -647,6 +647,7 @@ class PolicyGradient:
         if not hasattr(self, 'gamma'):
             self.gamma = np.exp(-self.dt / self.config['tau_reward'])
             print(f"\n*** Initialized gamma = {self.gamma:.6f} ***")
+            self.gamma = 1
         
         V_s_t = z_all # Shape (T, B)
         V_s_tplus1 = torch.cat([z_all[1:], torch.zeros_like(z_all[0:1])], dim=0)
@@ -672,8 +673,9 @@ class PolicyGradient:
                 print(f"  Negative δ - Mean: {neg_deltas.mean().item():.6f}, Min: {neg_deltas.min().item():.6f}")
 
         # --- Risk-Sensitive Transformation ---
-        eta_plus = 1.0 - self.kappa   # Dampen positive errors
-        eta_minus = 1.0 + self.kappa  # Amplify negative errors
+        # Use the values set during initialization
+        eta_plus = self.eta_plus
+        eta_minus = self.eta_minus
 
         # --- DEBUG: Risk-sensitivity parameters ---
         if verbose_debug:
@@ -759,7 +761,7 @@ class PolicyGradient:
         # --- Gradient update ---
         optimizer.zero_grad()
         loss.backward()
-        
+
         # --- DEBUG: Gradient statistics ---
         if verbose_debug:
             total_norm = 0
@@ -767,8 +769,21 @@ class PolicyGradient:
                 if p.grad is not None:
                     total_norm += p.grad.data.norm(2).item() ** 2
             total_norm = total_norm ** 0.5
-            print(f"  Gradient norm (baseline): {total_norm:.6f}")
-        
+            print(f"  Gradient norm (baseline - before clipping): {total_norm:.6f}")
+
+        # --- Gradient clipping ---
+        grad_clip = self.config.get('baseline_grad_clip', None)
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.baseline_net.parameters(), grad_clip)
+            if verbose_debug:
+                # Compute gradient norm after clipping
+                total_norm_clipped = 0
+                for p in self.baseline_net.parameters():
+                    if p.grad is not None:
+                        total_norm_clipped += p.grad.data.norm(2).item() ** 2
+                total_norm_clipped = total_norm_clipped ** 0.5
+                print(f"  Gradient norm (baseline - after clipping to {grad_clip}): {total_norm_clipped:.6f}")
+
         optimizer.step()
 
         # --- Store shared δ′ for policy update (detached) ---
@@ -881,22 +896,36 @@ class PolicyGradient:
                         inf_params.append(name)
             
             if verbose_debug:
-                print(f"\nGradient Statistics (policy):")
+                print(f"\nGradient Statistics (policy - before clipping):")
                 print(f"  Total norm: {total_grad_norm:.6f}")
                 print(f"  Max absolute: {max_grad:.6f}")
                 print(f"  Min absolute: {min_grad:.6f}")
-                
+
                 if nan_params:
                     print(f"  ⚠️  NaN gradients in: {nan_params}")
                 if inf_params:
                     print(f"  ⚠️  Inf gradients in: {inf_params}")
-            
+
             # Extra warnings for extreme kappa values
             if abs(self.kappa) > 0.5:
                 if nan_params or inf_params:
                     print(f"\n⚠️⚠️⚠️  GRADIENT ISSUES WITH κ={self.kappa:.3f}  ⚠️⚠️⚠️")
                 if total_grad_norm > 1000:
                     print(f"\n⚠️  Very large gradient norm ({total_grad_norm:.1f}) with κ={self.kappa:.3f}")
+
+        # --- Gradient clipping ---
+        grad_clip = self.config.get('grad_clip', None)
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), grad_clip)
+            if verbose_debug or self.kappa != 0:
+                # Compute gradient norm after clipping
+                total_grad_norm_clipped = 0
+                for param in self.policy_net.parameters():
+                    if param.grad is not None:
+                        total_grad_norm_clipped += param.grad.norm().item()
+                if verbose_debug:
+                    print(f"\nGradient Statistics (policy - after clipping to {grad_clip}):")
+                    print(f"  Total norm: {total_grad_norm_clipped:.6f}")
 
         optimizer.step()
         

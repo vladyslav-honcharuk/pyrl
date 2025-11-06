@@ -11,9 +11,9 @@ default = {
     'p0':                    0.1,
     'baseline_N':            100,
     'baseline_p0':           1,
-    'lr':                    0.001,
-    'baseline_lr':           0.001,
-    'max_iter':              1000,
+    'lr':                    0.002,
+    'baseline_lr':           0.002,
+    'max_iter':              2000,
     'fix':                   [],
     'baseline_fix':          [],
     'target_reward':         np.inf,
@@ -34,7 +34,7 @@ default = {
     'Win':                   1,
     'baseline_Win':          1,
     'bout':                  0,
-    'baseline_bout':         None,
+    'baseline_bout':         0.7,
     'Win_mask':              None,
     'baseline_Win_mask':     None,
     'rho':                   2,
@@ -43,5 +43,7 @@ default = {
     'L1_Wrec':               0,
     'L2_Wrec':               0,
     'policy_seed':           1,
-    'baseline_seed':         2
+    'baseline_seed':         2,
+    'grad_clip':             5,  # Gradient clipping threshold (None = no clipping)
+    'baseline_grad_clip':    5   # Baseline gradient clipping threshold (None = no clipping)
 }

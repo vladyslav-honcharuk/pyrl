@@ -43,7 +43,7 @@ class RecurrentNetwork(nn.Module):
 
     def firing_rate(self, x):
         """Convert states to firing rates."""
-        return torch.relu(x)
+        return torch.tanh(x)
 
     def step_0(self, x0=None):
         """

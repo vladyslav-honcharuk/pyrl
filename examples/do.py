@@ -6,14 +6,16 @@ Usage:
     python do.py <model_file> <action> [options]
 
 Actions:
-    info  - Display model information
-    train - Train the model
-    run   - Run analysis on trained model
+    info     - Display model information
+    train    - Train the model
+    finetune - Fine-tune a pre-trained model with new kappa value
+    run      - Run analysis on trained model
 
 Examples:
     python do.py models/rdm_fixed.py info
     python do.py models/rdm_fixed.py train --seed 1
     python do.py models/rdm_fixed.py train --gpu
+    python do.py models/rdm_fixed.py finetune --kappa 0.5 --suffix _kappa0p5
 """
 import argparse
 import os
@@ -32,7 +34,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train and run cognitive task models')
     parser.add_argument('model_file', help='Model specification file')
     parser.add_argument('action', nargs='?', type=str, default='info',
-                       help='Action to perform (info/train/retrain/run)')
+                       help='Action to perform (info/train/finetune/run)')
     parser.add_argument('args', nargs='*', help='Additional arguments')
     parser.add_argument('--dt', type=float, default=0,
                        help='Time step (ms). Default: use config value')
@@ -49,9 +51,16 @@ def main():
     parser.add_argument('--kappa', type=float, default=None,
                        help='Risk-sensitivity parameter: -1 (risk-averse) to +1 (risk-seeking)')
     parser.add_argument('--pretrained', type=str, default=None,
-                       help='Path to pre-trained model (for retrain action)')
-    parser.add_argument('--retrain-iter', type=int, default=None,
-                       help='Number of iterations for retraining (default: use model config)')
+                       help='Path to pre-trained model weights (for finetune action). '
+                            'If not specified, automatically uses base model name without suffix.')
+    parser.add_argument('--finetune-iter', type=int, default=None,
+                       help='Number of iterations for fine-tuning (default: use model config)')
+    parser.add_argument('--finetune-lr', type=float, default=None,
+                       help='Learning rate for fine-tuning (default: use pretrained model lr)')
+    parser.add_argument('--grad-clip', type=float, default=None,
+                       help='Gradient clipping threshold for policy network (default: no clipping)')
+    parser.add_argument('--baseline-grad-clip', type=float, default=None,
+                       help='Gradient clipping threshold for baseline network (default: no clipping)')
 
     args = parser.parse_args()
 
@@ -144,30 +153,36 @@ def main():
         recover = 'recover' in action_args
         model.train(savefile, seed, recover=recover, device=device, kappa=args.kappa)
 
-    elif action == 'retrain':
-        # Retrain model with new kappa value
+    elif action == 'finetune':
+        # Fine-tune model with new kappa value
         if args.kappa is None:
-            print("Error: --kappa is required for retrain action")
+            print("Error: --kappa is required for finetune action")
             sys.exit(1)
 
         # Determine pretrained file
         if args.pretrained:
             pretrained_file = args.pretrained
+            print(f"Using specified pre-trained weights: {pretrained_file}")
         else:
             # Default: use the base model name (without any suffix) for pretrained file
             base_name = os.path.splitext(os.path.basename(modelfile))[0]
             # Look in the directory without suffix (the original pre-trained model)
             pretrained_datapath = os.path.join(workpath, 'data', base_name)
             pretrained_file = os.path.join(pretrained_datapath, base_name + '.pkl')
+            print(f"Auto-detecting pre-trained weights: {pretrained_file}")
 
         if not os.path.exists(pretrained_file):
-            print(f"Error: Pre-trained file not found: {pretrained_file}")
-            print("Please specify --pretrained or train a model with kappa=0 first")
+            print(f"\nError: Pre-trained file not found: {pretrained_file}")
+            print("\nOptions:")
+            print("  1. Train a base model first (without --kappa or with --kappa 0)")
+            print("  2. Specify custom path with --pretrained /path/to/model.pkl")
             sys.exit(1)
 
         model = Model(modelfile)
-        model.retrain(pretrained_file, savefile, args.kappa,
-                     max_iter=args.retrain_iter, device=device)
+        model.finetune(pretrained_file, savefile, args.kappa, seed=seed,
+                      max_iter=args.finetune_iter, lr=args.finetune_lr,
+                      grad_clip=args.grad_clip, baseline_grad_clip=args.baseline_grad_clip,
+                      device=device)
 
     elif action == 'run':
         # Get analysis script
@@ -246,7 +261,7 @@ def main():
 
     else:
         print(f"Unrecognized action '{action}'.")
-        print("Valid actions: info, train, run")
+        print("Valid actions: info, train, finetune, run")
         sys.exit(1)
 
 

@@ -162,41 +162,105 @@ class Model:
         # Train
         pg.train(savefile, recover=recover)
 
-    def retrain(self, pretrained_file, savefile, kappa, max_iter=None, device='cpu'):
+    def finetune(self, pretrained_file, savefile, kappa, seed=1, max_iter=None, lr=None,
+                 grad_clip=None, baseline_grad_clip=None, device='cpu'):
         """
-        Retrain a pre-trained network with a new kappa value.
+        Fine-tune a pre-trained network with a new kappa value.
 
-        This implements the retraining procedure from Nakazawa et al. (2023):
-        1. Load a network pre-trained with kappa=0
-        2. Update only the kappa parameter (keep all weights)
-        3. Continue training with the new kappa value
+        This implements the fine-tuning procedure from Nakazawa et al. (2023):
+        1. Load weights from a network pre-trained with kappa=0
+        2. Use the original training hyperparameters (learning rate, batch size, etc.) from the pretrained model
+        3. Update only the kappa parameter (keep all weights)
+        4. Continue training with the new kappa value
 
         Parameters
         ----------
         pretrained_file : str
             Path to pre-trained model (trained with kappa=0).
         savefile : str
-            Path to save retrained model.
+            Path to save fine-tuned model.
         kappa : float
             New risk-sensitivity parameter (-1 to +1).
+        seed : int
+            Random seed for fine-tuning.
         max_iter : int, optional
-            Maximum iterations for retraining. If None, uses config default.
+            Maximum iterations for fine-tuning. If None, uses config default.
+        lr : float, optional
+            Learning rate for fine-tuning. If None, uses pretrained model's learning rate.
+        grad_clip : float, optional
+            Gradient clipping threshold for policy network. If None, no clipping.
+        baseline_grad_clip : float, optional
+            Gradient clipping threshold for baseline network. If None, no clipping.
         device : str, optional
             Device to use ('cpu', 'cuda', or specific cuda device).
         """
-        # Load pre-trained model
-        pg = self.get_pg(pretrained_file, load='best', device=device, kappa=kappa)
+        # Load the pretrained model's config to get the training hyperparameters
+        from . import utils
+        saved_data = utils.load(pretrained_file)
+        saved_config = saved_data['config']
 
-        # Update kappa (this changes eta_plus and eta_minus)
-        pg.kappa = kappa
-        pg.eta_plus = 1.0 + kappa
-        pg.eta_minus = 1.0 - kappa
+        # Use saved hyperparameters (learning rates, batch size, etc.)
+        # This ensures we fine-tune with the same settings as the original training
+        finetune_config = self.config.copy()
+        finetune_config['lr'] = saved_config['lr'] if lr is None else lr
+        finetune_config['baseline_lr'] = saved_config['baseline_lr'] if lr is None else lr
+        finetune_config['n_gradient'] = saved_config['n_gradient']
+        finetune_config['n_validation'] = saved_config['n_validation']
+
+        # Apply gradient clipping if specified
+        if grad_clip is not None:
+            finetune_config['grad_clip'] = grad_clip
+        if baseline_grad_clip is not None:
+            finetune_config['baseline_grad_clip'] = baseline_grad_clip
+
+        # Set seeds
+        finetune_config['seed'] = 3 * seed
+        finetune_config['policy_seed'] = 3 * seed + 1
+        finetune_config['baseline_seed'] = 3 * seed + 2
+        finetune_config['kappa'] = kappa
+
+        # Create a PolicyGradient instance using the saved training hyperparameters
+        pg = self.get_pg(finetune_config, seed=finetune_config['seed'], device=device, kappa=kappa)
+
+        # Load the best weights from the pretrained model
+        # The save format uses separate keys for policy and baseline params
+        policy_params = saved_data.get('best_policy_params', saved_data.get('current_policy_params'))
+        baseline_params = saved_data.get('best_baseline_params', saved_data.get('current_baseline_params'))
+
+        if policy_params is None or baseline_params is None:
+            print("Error: Could not find saved parameters in pretrained file")
+            print(f"Available keys: {list(saved_data.keys())}")
+            sys.exit(1)
+
+        # Convert numpy arrays to PyTorch state dicts and load
+        import torch
+        policy_state_dict = {k: torch.from_numpy(v).to(device) for k, v in policy_params.items()}
+        baseline_state_dict = {k: torch.from_numpy(v).to(device) for k, v in baseline_params.items()}
+
+        pg.policy_net.load_state_dict(policy_state_dict)
+        pg.baseline_net.load_state_dict(baseline_state_dict)
+
+        # Verify weights loaded correctly by checking critical parameters
+        print(f"\nWeight loading verification:")
+        print(f"  Policy network:")
+        for name, param in pg.policy_net.named_parameters():
+            print(f"    {name}: shape={param.shape}, mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}, nonzero={torch.count_nonzero(param.data).item()}/{param.numel()}")
+        print(f"  Baseline network:")
+        for name, param in list(pg.baseline_net.named_parameters())[:3]:
+            print(f"    {name}: shape={param.shape}, mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+        print(f"  Total policy parameters: {sum(p.numel() for p in pg.policy_net.parameters())}")
+        print(f"  Total baseline parameters: {sum(p.numel() for p in pg.baseline_net.parameters())}")
 
         print(f"\n{'='*80}")
-        print(f"RETRAINING WITH NEW KAPPA")
+        print(f"FINE-TUNING WITH NEW KAPPA")
         print(f"{'='*80}")
-        print(f"Loaded pre-trained model from: {pretrained_file}")
-        print(f"New kappa (κ): {kappa}")
+        print(f"Loaded pre-trained weights from: {pretrained_file}")
+        print(f"Using hyperparameters from pretrained model:")
+        print(f"  Learning rate: {pg.config['lr']}")
+        print(f"  Baseline learning rate: {pg.config['baseline_lr']}")
+        print(f"  Batch size (n_gradient): {pg.config['n_gradient']}")
+        print(f"  Validation trials: {pg.config['n_validation']}")
+        print(f"\nNew kappa (κ): {kappa}")
         print(f"  η⁺ (positive RPE scaling): {pg.eta_plus}")
         print(f"  η⁻ (negative RPE scaling): {pg.eta_minus}")
         if kappa > 0:
@@ -211,7 +275,7 @@ class Model:
         if max_iter is not None:
             original_max_iter = pg.config['max_iter']
             pg.config['max_iter'] = max_iter
-            print(f"Retraining iterations: {max_iter} (original: {original_max_iter})")
+            print(f"Fine-tuning iterations: {max_iter} (original: {original_max_iter})")
 
         # Train with new kappa
         pg.train(savefile, recover=False)

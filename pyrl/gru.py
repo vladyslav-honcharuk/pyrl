@@ -134,12 +134,11 @@ class GRU(RecurrentNetwork):
         self.Wrec.data *= rho / rho0
 
         # Output weights
-        if self.config['Wout'] > 0:
-            print(f"[ {self.network_name} ] Initialize Wout to random normal.")
-            Wout = self.config['Wout'] * rng.normal(size=(self.N, self.Nout))
-        else:
-            print(f"[ {self.network_name} ] Initialize Wout to zeros.")
-            Wout = np.zeros((self.N, self.Nout))
+        # Initialize Wout with small random values. Avoid all-zero initialization
+        # because it produces identical logits and zero gradients for the policy.
+        std = self.config['Wout'] if self.config['Wout'] > 0 else 0.05
+        print(f"[ {self.network_name} ] Initialize Wout to random normal (std={std}).")
+        Wout = std * rng.normal(size=(self.N, self.Nout))
         self.Wout = nn.Parameter(torch.FloatTensor(Wout))
 
         # Output biases
@@ -207,7 +206,7 @@ class GRU(RecurrentNetwork):
         gate_inputs = inputs_t[:, self.N:]
 
         # Firing rate from previous state
-        r_tm1 = torch.relu(x_tm1)
+        r_tm1 = torch.tanh(x_tm1)
 
         # Gate values
         gate_values = torch.sigmoid(torch.matmul(r_tm1, Wrec_gates) + gate_inputs)
@@ -283,8 +282,8 @@ class GRU(RecurrentNetwork):
             # Combine t=0 with t>0
             x_all = torch.cat([x0.unsqueeze(0), x], dim=0)
 
-            # Firing rates
-            r = torch.relu(x_all)
+            # Firing rates (use tanh to match actual firing rate computation)
+            r = torch.tanh(x_all)
 
             # Regularization
             regs += self.config['L2_r'] * torch.sum((r ** 2) * M_expanded) / torch.sum(M_expanded)
