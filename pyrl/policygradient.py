@@ -582,7 +582,15 @@ class PolicyGradient:
             sys.exit(0)
 
     def _update_baseline(self, results, optimizer):
-        """Update baseline (value) network using risk-sensitive MONTE CARLO returns."""
+        """Update baseline (value) network using risk-sensitive TD learning at reward timesteps only.
+
+        Key insight: With sparse rewards, most timesteps have R=0. Learning TD error at these
+        timesteps just teaches V(s) ≈ γV(s'), which is noisy. Instead, we only compute loss
+        at timesteps where rewards occur, where the TD error contains actual signal.
+
+        This allows the value network to learn what states/actions lead to rewards, without
+        the noise from thousands of R=0 timesteps.
+        """
 
         # --- DEBUGGING: Initialize step counter if not exists ---
         if not hasattr(self, '_debug_step'):
@@ -643,43 +651,52 @@ class PolicyGradient:
             print(f"  Min: {z_all.min().item():.6f}")
             print(f"  Max: {z_all.max().item():.6f}")
 
-        # --- Compute Monte Carlo returns: G_t = sum_{k=t}^{T} γ^{k-t} * R_k ---
+        # --- Compute TD error ONLY at meaningful timesteps ---
         if not hasattr(self, 'gamma'):
             self.gamma = np.exp(-self.dt / self.config['tau_reward'])
             print(f"\n*** Initialized gamma = {self.gamma:.6f} ***")
             self.gamma = 1
 
-        # Compute discounted returns from the end backwards
-        T, B = R.shape
-        G = torch.zeros_like(R)  # Monte Carlo returns
-        G_running = torch.zeros(B, device=self.device)
-
-        # Backward pass to compute returns
-        for t in range(T - 1, -1, -1):
-            G_running = R[t] * M[t] + self.gamma * G_running
-            G[t] = G_running
-
-        if verbose_debug:
-            print(f"\nMonte Carlo Returns G:")
-            print(f"  Shape: {G.shape}")
-            print(f"  Mean: {G.mean().item():.6f}")
-            print(f"  Std: {G.std().item():.6f}")
-            print(f"  Min: {G.min().item():.6f}")
-            print(f"  Max: {G.max().item():.6f}")
-
-        # Compute advantage: δ_t = G_t - V(s_t)
+        # Standard TD error: δ = R + γV(s') - V(s)
         V_s_t = z_all  # Shape (T, B)
-        delta = G - V_s_t
+        V_s_tplus1 = torch.cat([z_all[1:], torch.zeros_like(z_all[0:1])], dim=0)
+        delta = R + self.gamma * V_s_tplus1 - V_s_t
 
-        # --- DEBUG: Advantage statistics (BEFORE risk-sensitivity) ---
+        # Create learning mask: only learn at timesteps with non-zero rewards
+        # This prevents learning from boring R=0 timesteps where TD error is just noise
+        reward_mask = (R != 0).float()
+        n_reward_steps = reward_mask.sum().item()
+        n_total_steps = M.sum().item()
+
         if verbose_debug:
-            print(f"\nAdvantage δ = G - V(s) (BEFORE risk-sensitivity):")
-            print(f"  Formula: δ = G_t - V(s_t), where G_t = sum_{{k=t}}^T γ^{{k-t}} * R_k")
+            print(f"\nReward Mask (learning only at reward timesteps):")
+            print(f"  Total valid timesteps: {n_total_steps:.0f}")
+            print(f"  Reward timesteps: {n_reward_steps:.0f} ({100*n_reward_steps/max(n_total_steps,1):.1f}%)")
+            print(f"  Zero-reward timesteps (IGNORED): {n_total_steps - n_reward_steps:.0f}")
+
+        if verbose_debug:
+            print(f"\nTD Error δ at ALL timesteps (before masking):")
+            print(f"  Formula: δ = R + γV(s') - V(s)")
             print(f"  γ = {self.gamma:.6f}")
             print(f"  Mean: {delta.mean().item():.6f}")
             print(f"  Std: {delta.std().item():.6f}")
             print(f"  Min: {delta.min().item():.6f}")
             print(f"  Max: {delta.max().item():.6f}")
+
+            # Show TD error statistics ONLY at reward timesteps
+            if n_reward_steps > 0:
+                delta_at_rewards = delta[reward_mask > 0]
+                print(f"\nTD Error δ at REWARD timesteps only (what we'll learn from):")
+                print(f"  Mean: {delta_at_rewards.mean().item():.6f}")
+                print(f"  Std: {delta_at_rewards.std().item():.6f}")
+                print(f"  Min: {delta_at_rewards.min().item():.6f}")
+                print(f"  Max: {delta_at_rewards.max().item():.6f}")
+                print(f"  Positive δ: {(delta_at_rewards > 0).sum().item()}/{len(delta_at_rewards)} ({100*(delta_at_rewards > 0).float().mean().item():.1f}%)")
+                print(f"  Negative δ: {(delta_at_rewards < 0).sum().item()}/{len(delta_at_rewards)} ({100*(delta_at_rewards < 0).float().mean().item():.1f}%)")
+
+        # --- DEBUG: Full advantage statistics (BEFORE risk-sensitivity) ---
+        if verbose_debug:
+            print(f"\nTD Error δ (BEFORE risk-sensitivity):")
             print(f"  Positive δ: {(delta > 0).sum().item()}/{delta.numel()} ({100*(delta > 0).float().mean().item():.1f}%)")
             print(f"  Negative δ: {(delta < 0).sum().item()}/{delta.numel()} ({100*(delta < 0).float().mean().item():.1f}%)")
 
@@ -758,16 +775,29 @@ class PolicyGradient:
             ratio = delta_prime.abs().mean() / (delta.abs().mean() + 1e-10)
             print(f"  Overall magnitude ratio |δ′|/|δ|: {ratio.item():.6f}")
 
-        # --- Compute baseline loss ---
-        loss = torch.sum((delta_prime)**2 * M) / torch.sum(M)
+        # --- Compute baseline loss (ONLY at reward timesteps) ---
+        # Combine reward mask with episode mask
+        learning_mask = reward_mask * M
+        n_learning_steps = learning_mask.sum()
+
+        # Only compute loss at timesteps with rewards
+        if n_learning_steps > 0:
+            loss = torch.sum((delta_prime)**2 * learning_mask) / n_learning_steps
+        else:
+            # If no rewards in this batch, use zero loss (shouldn't happen in practice)
+            loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
         # --- DEBUG: Loss statistics ---
         if verbose_debug:
-            loss_unscaled = torch.sum(delta**2 * M) / torch.sum(M)
+            loss_unscaled = torch.sum(delta**2 * learning_mask) / max(n_learning_steps, 1) if n_learning_steps > 0 else torch.tensor(0.0)
+            loss_all_steps = torch.sum(delta**2 * M) / torch.sum(M)
             print(f"\nLoss:")
-            print(f"  Baseline loss (with risk-sensitivity): {loss.item():.6f}")
-            print(f"  Baseline loss (without risk-sensitivity): {loss_unscaled.item():.6f}")
-            print(f"  Ratio (risk/neutral): {(loss/loss_unscaled).item():.6f}")
+            print(f"  Learning at {n_learning_steps:.0f} reward timesteps (ignoring {n_total_steps - n_learning_steps:.0f} zero-reward steps)")
+            print(f"  Baseline loss (with risk-sensitivity, at reward steps): {loss.item():.6f}")
+            print(f"  Baseline loss (without risk-sensitivity, at reward steps): {loss_unscaled.item():.6f}")
+            print(f"  Baseline loss (if we used ALL timesteps): {loss_all_steps.item():.6f}")
+            if n_learning_steps > 0:
+                print(f"  Ratio (risk/neutral): {(loss/loss_unscaled).item():.6f}")
 
         reg = self.baseline_net.get_regs(x0, states_b, M[:-1])
         if verbose_debug:
