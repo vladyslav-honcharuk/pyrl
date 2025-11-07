@@ -656,7 +656,7 @@ class PolicyGradient:
 
         # Backward pass to compute returns
         for t in range(T - 1, -1, -1):
-            G_running = R[t] + self.gamma * G_running * M[t]
+            G_running = R[t] * M[t] + self.gamma * G_running
             G[t] = G_running
 
         if verbose_debug:

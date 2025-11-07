@@ -14,7 +14,7 @@ def compute_mc_returns(R, M, gamma=1.0):
 
     # Backward pass to compute returns
     for t in range(T - 1, -1, -1):
-        G_running = R[t] + gamma * G_running * M[t]
+        G_running = R[t] * M[t] + gamma * G_running
         G[t] = G_running
 
     return G
@@ -86,16 +86,43 @@ R = torch.tensor([
 M = torch.tensor([
     [1.0],
     [1.0],
-    [1.0],
-    [0.0],  # Episode ended
+    [0.0],  # Episode ended after t=1
+    [0.0],
     [0.0]
 ])
 G = compute_mc_returns(R, M, gamma=1.0)
 print(f"Rewards:\n{R}")
 print(f"Mask:\n{M}")
 print(f"Returns:\n{G}")
-print("Expected: G should be 1.0 for t=0,1,2 and then 0 after mask ends")
+print("Expected: Only masked rewards contribute")
+print("  G[0] = R[0]*M[0] + R[1]*M[1] + R[2]*M[2] + ... = 0*1 + 1*1 + 0*0 = 1.0")
+print("  G[1] = R[1]*M[1] + R[2]*M[2] + ... = 1*1 + 0*0 = 1.0")
+print("  G[2] = R[2]*M[2] + ... = 0*0 = 0.0")
 assert torch.allclose(G, torch.tensor([[1.0], [1.0], [0.0], [0.0], [0.0]]))
+print("✓ PASSED\n")
+
+# Test case 5: Reward at invalid timestep should not contribute
+print("Test 5: Reward at masked timestep should NOT contribute")
+R = torch.tensor([
+    [0.0],
+    [1.0],
+    [5.0],  # This reward is at invalid timestep!
+    [0.0]
+])
+M = torch.tensor([
+    [1.0],
+    [1.0],
+    [0.0],  # Episode ended, this timestep is invalid
+    [0.0]
+])
+G = compute_mc_returns(R, M, gamma=1.0)
+print(f"Rewards:\n{R}")
+print(f"Mask:\n{M}")
+print(f"Returns:\n{G}")
+print("Expected: R[2]=5.0 should NOT contribute because M[2]=0")
+print("  G[0] = 0*1 + 1*1 + 5*0 + 0*0 = 1.0")
+print("  G[1] = 1*1 + 5*0 + 0*0 = 1.0")
+assert torch.allclose(G, torch.tensor([[1.0], [1.0], [0.0], [0.0]]))
 print("✓ PASSED\n")
 
 print("=" * 60)
