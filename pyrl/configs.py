@@ -39,6 +39,7 @@ default = {
     'baseline_Win_mask':     None,
     'rho':                   2,
     'kappa':                 0,  # Risk-sensitivity parameter: -1 (risk-averse) to +1 (risk-seeking)
+    'entropy_coef':          0,  # Entropy regularization coefficient (0 = no entropy bonus, 0.01 = moderate)
     'baseline_rho':          2,
     'L1_Wrec':               0,
     'L2_Wrec':               0,

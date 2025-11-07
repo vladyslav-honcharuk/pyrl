@@ -843,7 +843,17 @@ class PolicyGradient:
         logpi_0 = torch.sum(log_z_0 * A[0], dim=-1) * M[0]
         logpi_t = torch.sum(log_z_pred * A[1:], dim=-1) * M[1:]
         logpi_all = torch.cat([logpi_0.unsqueeze(0), logpi_t], dim=0)
-        
+
+        # --- Compute entropy for all timesteps (to detect policy collapse) ---
+        # Entropy: H = -sum(p * log(p)) = -sum(exp(log_p) * log_p)
+        entropy_0 = -torch.sum(torch.exp(log_z_0) * log_z_0, dim=-1) * M[0]
+        entropy_t = torch.stack([
+            -torch.sum(torch.exp(log_z_pred[t]) * log_z_pred[t], dim=-1) * M[t+1]
+            for t in range(log_z_pred.shape[0])
+        ])
+        entropy_all = torch.cat([entropy_0.unsqueeze(0), entropy_t], dim=0)
+        mean_entropy = entropy_all.sum() / M.sum()
+
         if verbose_debug:
             print(f"\nLog-probabilities:")
             print(f"  Shape: {logpi_all.shape}")
@@ -851,27 +861,43 @@ class PolicyGradient:
             print(f"  Std: {logpi_all.std().item():.6f}")
             print(f"  Min: {logpi_all.min().item():.6f}")
             print(f"  Max: {logpi_all.max().item():.6f}")
+            print(f"\nPolicy Entropy:")
+            print(f"  Mean entropy: {mean_entropy.item():.6f}")
+            print(f"  Max possible entropy (log({self.policy_net.Nout})): {np.log(self.policy_net.Nout):.6f}")
+
+            # Detect policy collapse
+            collapse_threshold = 0.01  # Very low entropy indicates collapse
+            if mean_entropy.item() < collapse_threshold:
+                print(f"  ⚠️⚠️⚠️  POLICY COLLAPSE DETECTED! Entropy = {mean_entropy.item():.6f} < {collapse_threshold}")
+                print(f"  Policy is outputting near-deterministic actions (no exploration)")
+                print(f"  This will cause gradient collapse (zero gradients)")
 
         # --- Policy gradient objective (TD Actor-Critic) ---
         weighted_logpi = logpi_all * delta_prime * M
-        
+
         if verbose_debug:
             print(f"\nWeighted log-probs (log π · δ′):")
             print(f"  Mean: {weighted_logpi.mean().item():.6f}")
             print(f"  Sum: {weighted_logpi.sum().item():.6f}")
             print(f"  This will be divided by batch size {B_size}")
-        
+
         J = torch.sum(weighted_logpi) / B_size
+
+        # --- Entropy regularization (to prevent policy collapse) ---
+        entropy_coef = self.config.get('entropy_coef', 0.0)
+        entropy_bonus = entropy_coef * mean_entropy
 
         # Regularization
         reg = self.policy_net.get_regs(x0, states, M[:-1])
-        loss = -J + reg
+        loss = -J + reg - entropy_bonus  # Subtract entropy bonus (we want to maximize entropy)
 
         if verbose_debug:
             print(f"\nPolicy Loss:")
             print(f"  Objective J (before negation): {J.item():.6f}")
             print(f"  Regularization: {reg.item():.6f}")
-            print(f"  Total loss (-J + reg): {loss.item():.6f}")
+            if entropy_coef > 0:
+                print(f"  Entropy bonus (coef={entropy_coef}): {entropy_bonus.item():.6f}")
+            print(f"  Total loss (-J + reg - H): {loss.item():.6f}")
 
         # --- Gradient update ---
         optimizer.zero_grad()
