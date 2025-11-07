@@ -582,7 +582,7 @@ class PolicyGradient:
             sys.exit(0)
 
     def _update_baseline(self, results, optimizer):
-        """Update baseline (value) network using risk-sensitive TEMPORAL DIFFERENCE learning."""
+        """Update baseline (value) network using risk-sensitive MONTE CARLO returns."""
 
         # --- DEBUGGING: Initialize step counter if not exists ---
         if not hasattr(self, '_debug_step'):
@@ -643,20 +643,38 @@ class PolicyGradient:
             print(f"  Min: {z_all.min().item():.6f}")
             print(f"  Max: {z_all.max().item():.6f}")
 
-        # --- Compute the TD-error: δ_t = R_t + γ * V(s_{t+1}) - V(s_t) ---
+        # --- Compute Monte Carlo returns: G_t = sum_{k=t}^{T} γ^{k-t} * R_k ---
         if not hasattr(self, 'gamma'):
             self.gamma = np.exp(-self.dt / self.config['tau_reward'])
             print(f"\n*** Initialized gamma = {self.gamma:.6f} ***")
             self.gamma = 1
-        
-        V_s_t = z_all # Shape (T, B)
-        V_s_tplus1 = torch.cat([z_all[1:], torch.zeros_like(z_all[0:1])], dim=0)
-        delta = R + self.gamma * V_s_tplus1 - V_s_t
 
-        # --- DEBUG: TD error statistics (BEFORE risk-sensitivity) ---
+        # Compute discounted returns from the end backwards
+        T, B = R.shape
+        G = torch.zeros_like(R)  # Monte Carlo returns
+        G_running = torch.zeros(B, device=self.device)
+
+        # Backward pass to compute returns
+        for t in range(T - 1, -1, -1):
+            G_running = R[t] + self.gamma * G_running * M[t]
+            G[t] = G_running
+
         if verbose_debug:
-            print(f"\nTD Error δ (BEFORE risk-sensitivity):")
-            print(f"  Formula: δ = R + γV(s') - V(s)")
+            print(f"\nMonte Carlo Returns G:")
+            print(f"  Shape: {G.shape}")
+            print(f"  Mean: {G.mean().item():.6f}")
+            print(f"  Std: {G.std().item():.6f}")
+            print(f"  Min: {G.min().item():.6f}")
+            print(f"  Max: {G.max().item():.6f}")
+
+        # Compute advantage: δ_t = G_t - V(s_t)
+        V_s_t = z_all  # Shape (T, B)
+        delta = G - V_s_t
+
+        # --- DEBUG: Advantage statistics (BEFORE risk-sensitivity) ---
+        if verbose_debug:
+            print(f"\nAdvantage δ = G - V(s) (BEFORE risk-sensitivity):")
+            print(f"  Formula: δ = G_t - V(s_t), where G_t = sum_{{k=t}}^T γ^{{k-t}} * R_k")
             print(f"  γ = {self.gamma:.6f}")
             print(f"  Mean: {delta.mean().item():.6f}")
             print(f"  Std: {delta.std().item():.6f}")
@@ -664,7 +682,7 @@ class PolicyGradient:
             print(f"  Max: {delta.max().item():.6f}")
             print(f"  Positive δ: {(delta > 0).sum().item()}/{delta.numel()} ({100*(delta > 0).float().mean().item():.1f}%)")
             print(f"  Negative δ: {(delta < 0).sum().item()}/{delta.numel()} ({100*(delta < 0).float().mean().item():.1f}%)")
-            
+
             pos_deltas = delta[delta > 0]
             neg_deltas = delta[delta < 0]
             if len(pos_deltas) > 0:
@@ -703,9 +721,9 @@ class PolicyGradient:
                                 eta_plus * delta,
                                 eta_minus * delta)
 
-        # --- DEBUG: TD error statistics (AFTER risk-sensitivity) ---
+        # --- DEBUG: Advantage statistics (AFTER risk-sensitivity) ---
         if verbose_debug:
-            print(f"\nTD Error δ′ (AFTER risk-sensitivity):")
+            print(f"\nAdvantage δ′ (AFTER risk-sensitivity):")
             print(f"  Formula: δ′ = η⁺·δ if δ>0, else η⁻·δ")
             print(f"  Mean: {delta_prime.mean().item():.6f}")
             print(f"  Std: {delta_prime.std().item():.6f}")
@@ -796,7 +814,7 @@ class PolicyGradient:
 
 
     def _update_policy(self, results, optimizer):
-        """Update policy network with risk-sensitive TD-ERROR (advantage)."""
+        """Update policy network with risk-sensitive advantages (based on Monte Carlo returns)."""
 
         # Use same debug counter as baseline
         if not hasattr(self, '_debug_step'):
