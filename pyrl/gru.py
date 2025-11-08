@@ -206,7 +206,7 @@ class GRU(RecurrentNetwork):
         gate_inputs = inputs_t[:, self.N:]
 
         # Firing rate from previous state
-        r_tm1 = torch.tanh(x_tm1)
+        r_tm1 = torch.relu(x_tm1)
 
         # Gate values
         gate_values = torch.sigmoid(torch.matmul(r_tm1, Wrec_gates) + gate_inputs)
@@ -282,8 +282,8 @@ class GRU(RecurrentNetwork):
             # Combine t=0 with t>0
             x_all = torch.cat([x0.unsqueeze(0), x], dim=0)
 
-            # Firing rates (use tanh to match actual firing rate computation)
-            r = torch.tanh(x_all)
+            # Firing rates (use relu to match actual firing rate computation)
+            r = torch.relu(x_all)
 
             # Regularization
             regs += self.config['L2_r'] * torch.sum((r ** 2) * M_expanded) / torch.sum(M_expanded)

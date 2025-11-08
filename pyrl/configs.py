@@ -12,16 +12,16 @@ default = {
     'baseline_N':            100,
     'baseline_p0':           1,
     'lr':                    0.002,
-    'baseline_lr':           0.002,
-    'max_iter':              2000,
+    'baseline_lr':           0.02,
+    'max_iter':              3000,
     'fix':                   [],
     'baseline_fix':          [],
     'target_reward':         np.inf,
     'mode':                  'episodic',
     'network_type':          'gru',
     'baseline_network_type': 'gru',
-    'R_ABORTED':             -1,
-    'R_TERMINAL':            None,
+    'R_ABORTED':             -0.5,
+    'R_TERMINAL':            -0.5,
     'abort_on_last_t':       True,
     'checkfreq':             50,
     'dt':                    10,
@@ -45,5 +45,7 @@ default = {
     'policy_seed':           1,
     'baseline_seed':         2,
     'grad_clip':             5,  # Gradient clipping threshold (None = no clipping)
-    'baseline_grad_clip':    5   # Baseline gradient clipping threshold (None = no clipping)
+    'baseline_grad_clip':    5,  # Baseline gradient clipping threshold (None = no clipping)
+    'entropy_cost':          0,  # Entropy regularization coefficient (higher = more exploration)
+    'advantage_clip':        None  # Clip advantages to [-clip, +clip] (None = no clipping)
 }

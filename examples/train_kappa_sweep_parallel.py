@@ -3,12 +3,12 @@
 Train a model with progressive kappa values IN PARALLEL.
 
 This script:
-1. Trains base model with kappa=0 for 1000 iterations
+1. Trains base model with kappa=0 for 2000 iterations
 2. Runs TWO chains in PARALLEL:
    - Positive chain: 0 → 0.1 → 0.2 → ... → 1.0
    - Negative chain: 0 → -0.1 → -0.2 → ... → -1.0
 
-Each step trains for 1000 iterations. The two chains run simultaneously
+Each step trains for 2000 iterations. The two chains run simultaneously
 to save time (roughly 2x faster than sequential).
 
 Usage:
@@ -78,7 +78,7 @@ def train_chain(chain_name, kappa_values, modelfile, base_name, finetune_iter, r
             '--kappa', str(kappa),
             '--suffix', suffix,
             '--pretrained', pretrained_path,
-            '--finetune-iter', str(finetune_iter),
+            '--finetune-iter', str(700),
             '--finetune-lr', '0.001'  # Lower LR for fine-tuning (0.001 vs 0.004 for base)
         ]
 
@@ -122,8 +122,8 @@ def main():
     base_name = os.path.splitext(os.path.basename(modelfile))[0]
 
     # Parameters
-    base_iter = 1000
-    finetune_iter = 1000
+    base_iter = 2000
+    finetune_iter = 2000
     kappa_step = 0.1
 
     # Generate chains
