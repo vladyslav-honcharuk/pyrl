@@ -138,6 +138,7 @@ class PolicyGradient:
             'Win': config['baseline_Win'] * np.sqrt(K) / baseline_Nin,
             'Win_mask': config['baseline_Win_mask'],
             'bout': config['baseline_bout'] if config['baseline_bout'] is not None else config['R_ABORTED'],
+            'x0': config.get('baseline_x0', 0),  # Higher initial state to prevent dead neurons
             'fix': config['baseline_fix'],
             'L2_r': config['baseline_L2_r'],
             'L1_Wrec': config['L1_Wrec'],
@@ -616,7 +617,7 @@ class PolicyGradient:
                 self.gamma = 1
             else:
                 self.gamma = np.exp(-self.dt / self.config['tau_reward'])
-            self.gamma = min(self.gamma, 0.99)  # Cap at 0.99
+            self.gamma = min(self.gamma, 0.99999)  # Cap at 0.99
             print(f"*** Initialized gamma = {self.gamma:.6f} ***")
 
         # Extract data
@@ -729,9 +730,47 @@ class PolicyGradient:
         
         if verbose_debug:
             print(f"{'='*80}\n")
+
+        if verbose_debug:
+            print(f"\n{'='*80}")
+            print(f"BASELINE UPDATE DEBUG - Step {self._debug_step}, κ={self.kappa:.3f}")
+            print(f"{'='*80}")
+            
+            # ===== ADD THIS =====
+            print(f"\nBaseline Network State Analysis:")
+            print(f"  x0 (initial state):")
+            print(f"    Mean: {x0.mean().item():.6f}")
+            print(f"    Std: {x0.std().item():.6f}")
+            print(f"    Min: {x0.min().item():.6f}")
+            print(f"    Max: {x0.max().item():.6f}")
+            
+            print(f"\n  states_b (all timesteps):")
+            print(f"    Mean: {states_b.mean().item():.6f}")
+            print(f"    Std: {states_b.std().item():.6f}")
+            print(f"    Min: {states_b.min().item():.6f}")
+            print(f"    Max: {states_b.max().item():.6f}")
+            print(f"    Fraction negative: {(states_b < 0).float().mean().item():.2%}")
+            print(f"    Fraction near zero (|x| < 0.01): {(states_b.abs() < 0.01).float().mean().item():.2%}")
+            
+            print(f"\n  Firing rates (after ReLU):")
+            firing_rates_b = torch.tanh(states_b)
+            print(f"    Mean: {firing_rates_b.mean().item():.6f}")
+            print(f"    Std: {firing_rates_b.std().item():.6f}")
+            print(f"    Fraction dead (= 0): {(firing_rates_b == 0).float().mean().item():.2%}")
+            print(f"    Fraction active (> 0.01): {(firing_rates_b > 0.01).float().mean().item():.2%}")
+            
+            # Per-neuron analysis
+            neuron_activity = firing_rates_b.mean(dim=[0, 1])  # Average over time and batch
+            n_active = (neuron_activity > 0.01).sum().item()
+            n_dead = (neuron_activity < 0.001).sum().item()
+            print(f"\n  Per-neuron statistics:")
+            print(f"    Active neurons (avg activity > 0.01): {n_active}/{self.baseline_net.N}")
+            print(f"    Dead neurons (avg activity < 0.001): {n_dead}/{self.baseline_net.N}")
+            print(f"    Most active neuron: {neuron_activity.max().item():.6f}")
+            print(f"    Least active neuron: {neuron_activity.min().item():.6f}")
             
     def _update_policy(self, results, optimizer):
-        """Update policy network with risk-sensitive TD-ERROR (advantage)."""
+        """Update policy network using Monte Carlo returns with risk-sensitive advantage."""
 
         # Use same debug counter as baseline
         if not hasattr(self, '_debug_step'):
@@ -745,7 +784,7 @@ class PolicyGradient:
         A = results['A']
         M = results['M']
         Q_trimmed = results['Q'][:-1]
-        delta_prime = results["delta_prime"]
+        delta_prime = results["delta_prime"]  # Risk-sensitive advantage from baseline
 
         if verbose_debug:
             print(f"\n{'='*80}")
@@ -787,7 +826,9 @@ class PolicyGradient:
             print(f"  Min: {logpi_all.min().item():.6f}")
             print(f"  Max: {logpi_all.max().item():.6f}")
 
-        # --- Policy gradient objective (TD Actor-Critic) ---
+        # --- REINFORCE objective (Monte Carlo Policy Gradient) ---
+        # ∇J = E[∇log π(a|s) * A(s,a)]
+        # where A(s,a) is the risk-sensitive advantage
         weighted_logpi = logpi_all * delta_prime * M
         
         if verbose_debug:

@@ -87,12 +87,12 @@ def run_analysis_for_model(kappa, suffix, modelfile, base_name, log_queue=None):
 
     # Step 1: Generate trials-a with activity data
     if not run_single_analysis(kappa, suffix, modelfile, base_name,
-                               'trials-a', ['2'], log_queue):
+                               'trials-a', ['5'], log_queue):
         all_success = False
 
     # Step 2: Generate trials-b with activity data
     if not run_single_analysis(kappa, suffix, modelfile, base_name,
-                               'trials-b', ['2'], log_queue):
+                               'trials-b', ['5'], log_queue):
         all_success = False
 
     # Step 3: Behavioral heatmap
@@ -108,6 +108,15 @@ def run_analysis_for_model(kappa, suffix, modelfile, base_name, log_queue=None):
     # Step 5: Temporal activity plots
     if not run_single_analysis(kappa, suffix, modelfile, base_name,
                                'temporal-activity', ['value', '3', str(kappa)], log_queue):
+        all_success = False
+
+    if not run_single_analysis(kappa, suffix, modelfile, base_name,
+                               'regression-scatter', ['policy', str(kappa)], log_queue):
+        all_success = False
+
+
+    if not run_single_analysis(kappa, suffix, modelfile, base_name,
+                               'neural-analysis', [str(kappa)], log_queue):
         all_success = False
 
     if all_success:

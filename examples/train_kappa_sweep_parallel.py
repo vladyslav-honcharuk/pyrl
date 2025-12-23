@@ -78,8 +78,8 @@ def train_chain(chain_name, kappa_values, modelfile, base_name, finetune_iter, r
             '--kappa', str(kappa),
             '--suffix', suffix,
             '--pretrained', pretrained_path,
-            '--finetune-iter', str(700),
-            '--finetune-lr', '0.001'  # Lower LR for fine-tuning (0.001 vs 0.004 for base)
+            '--finetune-iter', str(500),
+            '--finetune-lr', '0.0005'  # Lower LR for fine-tuning (0.001 vs 0.004 for base)
         ]
 
         success = run_command(
