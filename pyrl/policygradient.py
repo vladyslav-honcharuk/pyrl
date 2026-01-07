@@ -18,7 +18,25 @@ from .networks import Networks
 class PolicyGradient:
     """Policy gradient algorithm for training recurrent neural networks."""
 
-    def __init__(self, Task, config_or_savefile, seed, dt=None, load='best', device=None, kappa=0.0):
+    def __init__(self, Task, config_or_savefile, seed, dt=None, load='best', device=None, kappa=0.0,
+                 kappa_dist=None, kappa_dist_params=None):
+        """
+        Initialize PolicyGradient.
+
+        Parameters
+        ----------
+        kappa : float
+            Single kappa value for all neurons (default 0.0).
+        kappa_dist : str, optional
+            Distribution for per-neuron kappa values. Options:
+            - 'gaussian': Normal distribution
+            - 'uniform': Uniform distribution
+            - None: Use single kappa value
+        kappa_dist_params : dict, optional
+            Parameters for the kappa distribution:
+            - For 'gaussian': {'mean': float, 'std': float}
+            - For 'uniform': {'low': float, 'high': float}
+        """
         self.task = Task()
 
         # Determine device
@@ -40,9 +58,10 @@ class PolicyGradient:
         # Setup
         self._setup_training()
 
-        self.kappa = kappa
-        self.eta_plus = 1 - kappa
-        self.eta_minus = 1 + kappa
+        # Setup kappa (per-neuron or single value)
+        self.kappa_dist = kappa_dist
+        self.kappa_dist_params = kappa_dist_params
+        self._setup_kappa(kappa, kappa_dist, kappa_dist_params, seed)
 
     def _load_from_file(self, savefile, dt, load):
         """Load model from saved file."""
@@ -92,6 +111,13 @@ class PolicyGradient:
                                           self.config['network_type'])]
         self.baseline_net = Network(self.baseline_config, params=params_b,
                                     masks=masks_b, name='baseline')
+
+        # Store loaded kappa configuration (will be used in _setup_kappa)
+        self.loaded_kappa_mode = save.get('kappa_mode', 'single')
+        self.loaded_kappa_dist = save.get('kappa_dist', None)
+        self.loaded_kappa_dist_params = save.get('kappa_dist_params', None)
+        self.loaded_kappa_neurons = save.get('kappa_neurons', None)
+        self.loaded_kappa = save.get('kappa', self.config.get('kappa', 0.0))  # Fallback to config
 
     def _create_new_model(self, config, dt, seed):
         """Create new model from config."""
@@ -172,8 +198,13 @@ class PolicyGradient:
         if np.isfinite(self.config['tau_reward']):
             self.alpha_reward = self.dt / self.config['tau_reward']
             self.discount_factor = lambda t: np.exp(-t * self.alpha_reward)
+            
+            # Calculate gamma now so we can use it for inference/testing
+            self.gamma = np.exp(-self.dt / self.config['tau_reward'])
+            self.gamma = min(self.gamma, 0.99999)
         else:
             self.discount_factor = lambda t: 1
+            self.gamma = 1.0
 
         # Terminal/aborted rewards
         self.abort_on_last_t = self.config.get('abort_on_last_t', True)
@@ -187,6 +218,118 @@ class PolicyGradient:
 
         # Performance tracker
         self.Performance = self.config['Performance']
+
+    def _setup_kappa(self, kappa, kappa_dist, kappa_dist_params, seed):
+        """
+        Setup per-neuron or single kappa values.
+
+        Parameters
+        ----------
+        kappa : float
+            Single kappa value (used if kappa_dist is None).
+        kappa_dist : str or None
+            Distribution type ('gaussian', 'uniform', or None).
+        kappa_dist_params : dict or None
+            Distribution parameters.
+        seed : int
+            Random seed for reproducibility.
+        """
+        # Check if we're loading from a saved file with kappa configuration
+        if hasattr(self, 'loaded_kappa_mode'):
+            # Restore from saved file
+            self.kappa_mode = self.loaded_kappa_mode
+            self.kappa_dist = self.loaded_kappa_dist
+            self.kappa_dist_params = self.loaded_kappa_dist_params
+
+            if self.loaded_kappa_neurons is not None:
+                # Restore per-neuron kappa values
+                kappa_values = self.loaded_kappa_neurons
+                self.kappa_neurons = torch.FloatTensor(kappa_values).to(self.device)
+                self.eta_plus_neurons = 1 - self.kappa_neurons
+                self.eta_minus_neurons = 1 + self.kappa_neurons
+
+                # Store summary statistics
+                self.kappa = float(np.mean(kappa_values))
+                self.eta_plus = 1 - self.kappa
+                self.eta_minus = 1 + self.kappa
+
+                print(f"\n[ PolicyGradient ] Restored per-neuron kappa from saved file:")
+                print(f"  Distribution: {self.kappa_dist}")
+                print(f"  Parameters: {self.kappa_dist_params}")
+                print(f"  Kappa statistics:")
+                print(f"    Mean: {self.kappa:.4f}")
+                print(f"    Std:  {np.std(kappa_values):.4f}")
+                print(f"    Min:  {np.min(kappa_values):.4f}")
+                print(f"    Max:  {np.max(kappa_values):.4f}")
+                print(f"  Number of neurons: {self.baseline_net.N}")
+            else:
+                # Single kappa mode from loaded file
+                self.kappa = self.loaded_kappa  # Use saved value
+                self.eta_plus = 1 - self.kappa
+                self.eta_minus = 1 + self.kappa
+                self.kappa_neurons = torch.full((self.baseline_net.N,), self.kappa, device=self.device)
+                self.eta_plus_neurons = torch.full((self.baseline_net.N,), 1 - self.kappa, device=self.device)
+                self.eta_minus_neurons = torch.full((self.baseline_net.N,), 1 + self.kappa, device=self.device)
+                print(f"\n[ PolicyGradient ] Restored single kappa = {self.kappa:.4f} from saved file")
+
+            # Clean up temporary attributes
+            del self.loaded_kappa_mode
+            del self.loaded_kappa_dist
+            del self.loaded_kappa_dist_params
+            del self.loaded_kappa_neurons
+            del self.loaded_kappa
+            return
+
+        # New model initialization
+        self.kappa_mode = 'single' if kappa_dist is None else 'per_neuron'
+
+        if kappa_dist is None:
+            # Single kappa value for all neurons
+            self.kappa = kappa
+            self.eta_plus = 1 - kappa
+            self.eta_minus = 1 + kappa
+            # Create per-neuron arrays for uniform interface
+            self.kappa_neurons = torch.full((self.baseline_net.N,), kappa, device=self.device)
+            self.eta_plus_neurons = torch.full((self.baseline_net.N,), 1 - kappa, device=self.device)
+            self.eta_minus_neurons = torch.full((self.baseline_net.N,), 1 + kappa, device=self.device)
+        else:
+            # Per-neuron kappa values from distribution
+            rng = nptools.get_rng(seed=seed + 1000, loc=__name__ + '_kappa')
+
+            if kappa_dist == 'gaussian':
+                mean = kappa_dist_params.get('mean', 0.0)
+                std = kappa_dist_params.get('std', 0.1)
+                kappa_values = rng.normal(mean, std, size=self.baseline_net.N)
+                # Clip to valid range [-1, 1]
+                kappa_values = np.clip(kappa_values, -1.0, 1.0)
+
+            elif kappa_dist == 'uniform':
+                low = kappa_dist_params.get('low', -0.5)
+                high = kappa_dist_params.get('high', 0.5)
+                kappa_values = rng.uniform(low, high, size=self.baseline_net.N)
+
+            else:
+                raise ValueError(f"Unknown kappa distribution: {kappa_dist}")
+
+            # Convert to torch tensors
+            self.kappa_neurons = torch.FloatTensor(kappa_values).to(self.device)
+            self.eta_plus_neurons = 1 - self.kappa_neurons
+            self.eta_minus_neurons = 1 + self.kappa_neurons
+
+            # Store summary statistics
+            self.kappa = float(np.mean(kappa_values))  # Mean for reporting
+            self.eta_plus = 1 - self.kappa
+            self.eta_minus = 1 + self.kappa
+
+            print(f"\n[ PolicyGradient ] Per-neuron kappa distribution:")
+            print(f"  Distribution: {kappa_dist}")
+            print(f"  Parameters: {kappa_dist_params}")
+            print(f"  Kappa statistics:")
+            print(f"    Mean: {self.kappa:.4f}")
+            print(f"    Std:  {np.std(kappa_values):.4f}")
+            print(f"    Min:  {np.min(kappa_values):.4f}")
+            print(f"    Max:  {np.max(kappa_values):.4f}")
+            print(f"  Number of neurons: {self.baseline_net.N}")
 
     def make_noise(self, size, var=0):
         """Generate Gaussian noise."""
@@ -217,7 +360,9 @@ class PolicyGradient:
         Returns
         -------
         results : dict
-            Dictionary containing trial data.
+            Dictionary containing trial data including:
+            - RPE_objective: Online TD error (r(t) + γV(t+1) - V(t))
+            - RPE_subjective: Online TD error with kappa filter
         """
         if isinstance(trials, list):
             n_trials = len(trials)
@@ -293,6 +438,7 @@ class PolicyGradient:
                 if init is None:
                     z_t, x_t = self.policy_net.step_0()
                     z_t_b, x_t_b = self.baseline_net.step_0()
+                    
                 else:
                     z_t, x_t = init
                     z_t_b, x_t_b = init_b
@@ -366,12 +512,50 @@ class PolicyGradient:
         if progress_bar:
             print("100")
 
+        # === Calculate TRUE ONLINE RPE (Reward Prediction Error) ===
+        # This is what dopamine neurons actually signal!
+        # RPE(t) = r(t) + γ*V(t+1) - V(t)
+        # Only uses information available UP TO time t (no hindsight!)
+
+        with torch.no_grad():
+            # Compute online TD error: δ(t) = r(t) + γ*V(t+1) - V(t)
+            RPE_objective = self._compute_online_td_error(R, Z_b, M, self.gamma)
+
+            # Apply the "Personality Filter" (Kappa)
+            # This makes it Biologically Plausible. We distort the surprise
+            # based on whether the agent is an optimist or pessimist.
+
+            if self.kappa_mode == 'per_neuron':
+                # If every neuron has a different personality
+                RPE_exp = RPE_objective.unsqueeze(-1)  # reshape
+                eta_plus = self.eta_plus_neurons.view(1, 1, -1)
+                eta_minus = self.eta_minus_neurons.view(1, 1, -1)
+
+                # Apply filter
+                RPE_subj_neurons = torch.where(
+                    RPE_exp > 0,
+                    eta_plus * RPE_exp,   # Dampen gains
+                    eta_minus * RPE_exp   # Amplify losses
+                )
+                # Average them to get the total feeling
+                RPE_subjective = RPE_subj_neurons.mean(dim=-1)
+
+            else:
+                # If the whole network has one personality
+                RPE_subjective = torch.where(
+                    RPE_objective > 0,
+                    self.eta_plus * RPE_objective,  # Dampen gains
+                    self.eta_minus * RPE_objective  # Amplify losses
+                )
+
         # Return results
         results = {
             'U': U, 'Q': Q, 'Q_b': Q_b, 'Z': Z, 'Z_b': Z_b,
             'A': A, 'R': R, 'M': M, 'perf': perf,
             'prob_l': prob_l, 'prob_r': prob_r,
-            'size_l': size_l, 'size_r': size_r
+            'size_l': size_l, 'size_r': size_r,
+            'RPE_objective': RPE_objective,    # Online TD error: r(t) + γV(t+1) - V(t)
+            'RPE_subjective': RPE_subjective   # Online TD error with kappa filter
         }
         if return_states:
             results['r_policy'] = r_policy
@@ -527,7 +711,13 @@ class PolicyGradient:
                             'training_history': training_history,
                             'trials_tot': trials_tot,
                             'policy_optimizer_state': policy_optimizer.state_dict(),
-                            'baseline_optimizer_state': baseline_optimizer.state_dict()
+                            'baseline_optimizer_state': baseline_optimizer.state_dict(),
+                            # Kappa configuration
+                            'kappa_mode': self.kappa_mode,
+                            'kappa_dist': self.kappa_dist,
+                            'kappa_dist_params': self.kappa_dist_params,
+                            'kappa_neurons': self.kappa_neurons.cpu().numpy() if self.kappa_mode == 'per_neuron' else None,
+                            'kappa': self.kappa  # Save scalar kappa value
                         }
                         utils.save(savefile, save)
 
@@ -586,19 +776,58 @@ class PolicyGradient:
         """
         Compute discounted returns (Monte Carlo) for each timestep.
         This works better than TD for sparse reward tasks.
-        
+
         Return_t = r_t + γ*r_{t+1} + γ²*r_{t+2} + ... + γ^(T-t)*r_T
         """
         T, B = rewards.shape
         returns = torch.zeros_like(rewards)
-        
+
         # Work backwards from end of episode
         running_return = torch.zeros(B, device=rewards.device)
         for t in reversed(range(T)):
             running_return = rewards[t] + gamma * running_return
             returns[t] = running_return
-        
+
         return returns
+
+    def _compute_online_td_error(self, rewards, values, mask, gamma):
+        """
+        Compute TRUE online TD error (no hindsight!).
+        This is what dopamine neurons actually signal.
+
+        TD_error(t) = r(t) + γ*V(t+1) - V(t)
+
+        Parameters
+        ----------
+        rewards : torch.Tensor, shape (T, B)
+            Immediate rewards at each timestep
+        values : torch.Tensor, shape (T, B)
+            Value predictions at each timestep
+        mask : torch.Tensor, shape (T, B)
+            Valid timesteps (1 = valid, 0 = invalid)
+        gamma : float
+            Discount factor
+
+        Returns
+        -------
+        td_error : torch.Tensor, shape (T, B)
+            Online TD error at each timestep
+        """
+        T, B = rewards.shape
+        td_error = torch.zeros_like(rewards)
+
+        for t in range(T - 1):
+            # TD error = r(t) + γ*V(t+1) - V(t)
+            # This ONLY uses information available up to time t+1
+            td_error[t] = rewards[t] + gamma * values[t+1] - values[t]
+
+        # Last timestep: no future value
+        td_error[T-1] = rewards[T-1] - values[T-1]
+
+        # Apply mask
+        td_error = td_error * mask
+
+        return td_error
 
 
     def _update_baseline(self, results, optimizer):
@@ -681,18 +910,51 @@ class PolicyGradient:
             print(f"  Std in early episode (t<25): {early:.6f}")
             print(f"  Std in late episode (t>50): {late:.6f}")
 
-        # Risk-sensitive transformation (from paper)
-        eta_plus = self.eta_plus
-        eta_minus = self.eta_minus
-        
-        delta_prime = torch.where(delta > 0,
-                                eta_plus * delta,
-                                eta_minus * delta)
+        # Risk-sensitive transformation (per-neuron or single value)
+        # For per-neuron kappa, we need to compute the weighted TD error
+        # across neurons in the value network
+        if self.kappa_mode == 'per_neuron':
+            # Apply per-neuron eta transformations to the TD error
+            # Each neuron in the baseline network gets its own risk-sensitivity parameter
+
+            # Expand delta to match neuron dimensions: (T, B) -> (T, B, 1)
+            delta_expanded = delta.unsqueeze(-1)
+
+            # Create per-neuron modulated deltas
+            # Shape: (T, B, N) where each neuron gets its own eta scaling
+            eta_plus_exp = self.eta_plus_neurons.view(1, 1, -1)  # (1, 1, N)
+            eta_minus_exp = self.eta_minus_neurons.view(1, 1, -1)  # (1, 1, N)
+
+            delta_prime_per_neuron = torch.where(
+                delta_expanded > 0,
+                eta_plus_exp * delta_expanded,
+                eta_minus_exp * delta_expanded
+            )
+
+            # Average across neurons to get the final delta_prime (T, B)
+            delta_prime = delta_prime_per_neuron.mean(dim=-1)
+
+            if verbose_debug:
+                print(f"\nRisk-Sensitivity Parameters (PER-NEURON):")
+                print(f"  κ (kappa) mean: {self.kappa:.6f}")
+                print(f"  κ std: {self.kappa_neurons.std().item():.6f}")
+                print(f"  κ range: [{self.kappa_neurons.min().item():.6f}, {self.kappa_neurons.max().item():.6f}]")
+                print(f"  η⁺ mean: {self.eta_plus:.6f}, η⁻ mean: {self.eta_minus:.6f}")
+        else:
+            # Single kappa value (original behavior)
+            eta_plus = self.eta_plus
+            eta_minus = self.eta_minus
+
+            delta_prime = torch.where(delta > 0,
+                                    eta_plus * delta,
+                                    eta_minus * delta)
+
+            if verbose_debug:
+                print(f"\nRisk-Sensitivity Parameters (SINGLE):")
+                print(f"  κ (kappa): {self.kappa:.6f}")
+                print(f"  η⁺: {eta_plus:.6f}, η⁻: {eta_minus:.6f}")
 
         if verbose_debug:
-            print(f"\nRisk-Sensitivity Parameters:")
-            print(f"  κ (kappa): {self.kappa:.6f}")
-            print(f"  η⁺: {eta_plus:.6f}, η⁻: {eta_minus:.6f}")
             print(f"\nAdvantage δ′:")
             print(f"  Mean: {delta_prime.mean().item():.6f}")
             print(f"  Std: {delta_prime.std().item():.6f}")

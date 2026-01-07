@@ -50,6 +50,16 @@ def main():
                        help='Specific device (e.g., cuda, cuda:0, mps, cpu)')
     parser.add_argument('--kappa', type=float, default=None,
                        help='Risk-sensitivity parameter: -1 (risk-averse) to +1 (risk-seeking)')
+    parser.add_argument('--kappa-dist', type=str, default=None, choices=['gaussian', 'uniform'],
+                       help='Distribution for per-neuron kappa values (gaussian or uniform)')
+    parser.add_argument('--kappa-dist-mean', type=float, default=0.0,
+                       help='Mean for Gaussian kappa distribution (default: 0.0)')
+    parser.add_argument('--kappa-dist-std', type=float, default=0.1,
+                       help='Standard deviation for Gaussian kappa distribution (default: 0.1)')
+    parser.add_argument('--kappa-dist-low', type=float, default=-0.5,
+                       help='Lower bound for uniform kappa distribution (default: -0.5)')
+    parser.add_argument('--kappa-dist-high', type=float, default=0.5,
+                       help='Upper bound for uniform kappa distribution (default: 0.5)')
     parser.add_argument('--pretrained', type=str, default=None,
                        help='Path to pre-trained model weights (for finetune action). '
                             'If not specified, automatically uses base model name without suffix.')
@@ -91,6 +101,20 @@ def main():
     else:
         device = 'cpu'
 
+    # Process kappa distribution parameters
+    kappa_dist = args.kappa_dist
+    kappa_dist_params = None
+    if kappa_dist == 'gaussian':
+        kappa_dist_params = {
+            'mean': args.kappa_dist_mean,
+            'std': args.kappa_dist_std
+        }
+    elif kappa_dist == 'uniform':
+        kappa_dist_params = {
+            'low': args.kappa_dist_low,
+            'high': args.kappa_dist_high
+        }
+
     print("=" * 80)
     print(f"MODELFILE: {modelfile}")
     print(f"ACTION:    {action}")
@@ -98,6 +122,9 @@ def main():
     print(f"SEED:      {seed}")
     print(f"SUFFIX:    {suffix}")
     print(f"DEVICE:    {device}")
+    if kappa_dist:
+        print(f"KAPPA DIST: {kappa_dist}")
+        print(f"KAPPA PARAMS: {kappa_dist_params}")
     print("=" * 80)
 
     # Setup paths
@@ -151,7 +178,8 @@ def main():
         # Train model
         model = Model(modelfile)
         recover = 'recover' in action_args
-        model.train(savefile, seed, recover=recover, device=device, kappa=args.kappa)
+        model.train(savefile, seed, recover=recover, device=device, kappa=args.kappa,
+                   kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
 
     elif action == 'finetune':
         # Fine-tune model with new kappa value
@@ -182,7 +210,7 @@ def main():
         model.finetune(pretrained_file, savefile, args.kappa, seed=seed,
                       max_iter=args.finetune_iter, lr=args.finetune_lr,
                       grad_clip=args.grad_clip, baseline_grad_clip=args.baseline_grad_clip,
-                      device=device)
+                      device=device, kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
 
     elif action == 'run':
         # Get analysis script

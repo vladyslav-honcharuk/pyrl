@@ -97,7 +97,8 @@ class Model:
         if self.config['n_gradient'] == 1:
             self.config['checkfreq'] = 1
 
-    def get_pg(self, config_or_savefile, seed=1, dt=None, load='best', device=None, kappa=0.0):
+    def get_pg(self, config_or_savefile, seed=1, dt=None, load='best', device=None, kappa=0.0,
+               kappa_dist=None, kappa_dist_params=None):
         """
         Get PolicyGradient instance.
 
@@ -115,20 +116,31 @@ class Model:
             Device to use ('cpu', 'cuda', or specific cuda device).
         kappa : float
             Risk-sensitivity parameter (-1 to +1, default 0.0).
+        kappa_dist : str, optional
+            Distribution for per-neuron kappa ('gaussian', 'uniform', or None).
+        kappa_dist_params : dict, optional
+            Parameters for kappa distribution.
 
         Returns
         -------
         pg : PolicyGradient
             Configured PolicyGradient instance.
         """
-        # If config_or_savefile is a dict, check if it has kappa
-        if isinstance(config_or_savefile, dict) and 'kappa' in config_or_savefile:
-            kappa = config_or_savefile['kappa']
-        
-        return PolicyGradient(self.Task, config_or_savefile, seed=seed,
-                            dt=dt, load=load, device=device, kappa=kappa)
+        # If config_or_savefile is a dict, check if it has kappa/distribution params
+        if isinstance(config_or_savefile, dict):
+            if 'kappa' in config_or_savefile:
+                kappa = config_or_savefile['kappa']
+            if 'kappa_dist' in config_or_savefile:
+                kappa_dist = config_or_savefile['kappa_dist']
+            if 'kappa_dist_params' in config_or_savefile:
+                kappa_dist_params = config_or_savefile['kappa_dist_params']
 
-    def train(self, savefile='savefile.pkl', seed=1, recover=False, device='mps', kappa=None):
+        return PolicyGradient(self.Task, config_or_savefile, seed=seed,
+                            dt=dt, load=load, device=device, kappa=kappa,
+                            kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
+
+    def train(self, savefile='savefile.pkl', seed=1, recover=False, device='mps', kappa=None,
+              kappa_dist=None, kappa_dist_params=None):
         """
         Train the network.
 
@@ -144,26 +156,35 @@ class Model:
             Device to use ('cpu', 'cuda', or specific cuda device).
         kappa : float, optional
             Risk-sensitivity parameter (-1 to +1). If None, uses default 0.0.
+        kappa_dist : str, optional
+            Distribution for per-neuron kappa ('gaussian', 'uniform', or None).
+        kappa_dist_params : dict, optional
+            Parameters for kappa distribution.
         """
         # Default kappa to 0.0 if not specified
         if kappa is None:
             kappa = 0.0
-        
+
         if recover and os.path.isfile(savefile):
-            pg = self.get_pg(savefile, load='current', device=device, kappa=kappa)
+            pg = self.get_pg(savefile, load='current', device=device, kappa=kappa,
+                           kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
         else:
             self.config['seed'] = 3 * seed
             self.config['policy_seed'] = 3 * seed + 1
             self.config['baseline_seed'] = 3 * seed + 2
-            # Store kappa in config for reference
+            # Store kappa configuration in config for reference
             self.config['kappa'] = kappa
-            pg = self.get_pg(self.config, self.config['seed'], device=device, kappa=kappa)
+            self.config['kappa_dist'] = kappa_dist
+            self.config['kappa_dist_params'] = kappa_dist_params
+            pg = self.get_pg(self.config, self.config['seed'], device=device, kappa=kappa,
+                           kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
 
         # Train
         pg.train(savefile, recover=recover)
 
     def finetune(self, pretrained_file, savefile, kappa, seed=1, max_iter=None, lr=None,
-                 grad_clip=None, baseline_grad_clip=None, device='cpu'):
+                 grad_clip=None, baseline_grad_clip=None, device='cpu',
+                 kappa_dist=None, kappa_dist_params=None):
         """
         Fine-tune a pre-trained network with a new kappa value.
 
@@ -193,6 +214,10 @@ class Model:
             Gradient clipping threshold for baseline network. If None, no clipping.
         device : str, optional
             Device to use ('cpu', 'cuda', or specific cuda device).
+        kappa_dist : str, optional
+            Distribution for per-neuron kappa ('gaussian', 'uniform', or None).
+        kappa_dist_params : dict, optional
+            Parameters for kappa distribution.
         """
         # Load the pretrained model's config to get the training hyperparameters
         from . import utils
@@ -218,9 +243,12 @@ class Model:
         finetune_config['policy_seed'] = 3 * seed + 1
         finetune_config['baseline_seed'] = 3 * seed + 2
         finetune_config['kappa'] = kappa
+        finetune_config['kappa_dist'] = kappa_dist
+        finetune_config['kappa_dist_params'] = kappa_dist_params
 
         # Create a PolicyGradient instance using the saved training hyperparameters
-        pg = self.get_pg(finetune_config, seed=finetune_config['seed'], device=device, kappa=kappa)
+        pg = self.get_pg(finetune_config, seed=finetune_config['seed'], device=device, kappa=kappa,
+                        kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
 
         # Load the best weights from the pretrained model
         # The save format uses separate keys for policy and baseline params

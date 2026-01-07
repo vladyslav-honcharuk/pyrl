@@ -45,5 +45,5 @@ default = {
     'policy_seed':           1,
     'baseline_seed':         2,
     'grad_clip':             None,  # Gradient clipping threshold (None = no clipping)
-    'baseline_grad_clip':    None   # Baseline gradient clipping threshold (None = no clipping)
+    'baseline_grad_clip':    None,  # Baseline gradient clipping threshold (None = no clipping)
 }

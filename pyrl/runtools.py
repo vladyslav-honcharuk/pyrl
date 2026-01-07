@@ -66,11 +66,25 @@ def run(action, trials, pg, scratchpath, dt_save=None):
         perf = results['perf']
         r_policy = results['r_policy']
         r_value = results['r_value']
+        
+        # Include RPE signals if available (added in updated run_trials)
+        RPE_objective = results.get('RPE_objective', None)
+        RPE_subjective = results.get('RPE_subjective', None)
 
         for trial in trials:
             trial['time'] = trial['time'][::inc]
-        save = [trials, U[::inc], Z[::inc], Z_b[::inc], A[::inc], R[::inc],
-                M[::inc], perf, r_policy[::inc], r_value[::inc]]
+        
+        # Save with RPE signals if available
+        if RPE_objective is not None and RPE_subjective is not None:
+            save = [trials, U[::inc], Z[::inc], Z_b[::inc], A[::inc], R[::inc],
+                    M[::inc], perf, r_policy[::inc], r_value[::inc],
+                    RPE_objective[::inc], RPE_subjective[::inc]]
+            print("Including RPE signals in saved data.")
+        else:
+            # Backward compatibility: save without RPE if not available
+            save = [trials, U[::inc], Z[::inc], Z_b[::inc], A[::inc], R[::inc],
+                    M[::inc], perf, r_policy[::inc], r_value[::inc]]
+            print("Warning: RPE signals not found in results (using older version?)")
     else:
         raise ValueError(action)
 
