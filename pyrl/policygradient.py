@@ -502,7 +502,7 @@ class PolicyGradient:
                     else:
                         u_t_np, r_t, status = self.task.get_step(self.rng, self.dt, trial, t+1, a_t)
                         U[t, n] = torch.FloatTensor(u_t_np).to(self.device)
-                        R[t, n] = r_t *  1 #self.discount_factor(t)
+                        R[t, n] = r_t * self.discount_factor(t)
 
                     M[t, n] = 1
 
