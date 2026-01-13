@@ -854,17 +854,16 @@ class PolicyGradient:
         M = results['M']  # Shape (T, B)
 
         # Get baseline predictions
-        # CRITICAL: Baseline sees [r_policy[t], A[t-1]] at timestep t
-        # So for RNN inputs (t=1 to T-1), we need [r_policy[1:], A[:-1]]
         r_policy = results['r_policy']
         A = results['A']
-        baseline_inputs = torch.cat([r_policy[1:], A[:-1]], dim=-1)
-        B_size = baseline_inputs.shape[1]
+        baseline_inputs = torch.cat([r_policy, A], dim=-1)
+        baseline_inputs_trimmed = baseline_inputs[:-1]
+        B_size = baseline_inputs_trimmed.shape[1]
         x0 = self.baseline_net.x0.unsqueeze(0).expand(B_size, -1)
-        
+
         z_pred, states_b = self.baseline_net(
-            baseline_inputs,
-            results['Q_b'][1:],  # Q_b[1:] corresponds to noise at t=1 to T-1
+            baseline_inputs_trimmed,
+            results['Q_b'][:-1],
             x0
         )
         z_0, _ = self.baseline_net.step_0(x0)
@@ -966,7 +965,7 @@ class PolicyGradient:
         else:
             loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
-        reg = self.baseline_net.get_regs(x0, states_b, M[1:])
+        reg = self.baseline_net.get_regs(x0, states_b, M[:-1])
         loss += reg
 
         if verbose_debug:
