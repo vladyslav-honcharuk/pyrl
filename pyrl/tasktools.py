@@ -95,7 +95,6 @@ def generate_ei(N, pE=0.8):
     assert 0 <= pE <= 1
 
     Nexc = int(pE*N)
-    Ninh = N - Nexc
 
     idx = list(range(N))
     EXC = idx[:Nexc]

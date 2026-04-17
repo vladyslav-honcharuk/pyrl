@@ -7,7 +7,6 @@ import sys
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
 
 from . import utils
@@ -502,7 +501,7 @@ class PolicyGradient:
                     else:
                         u_t_np, r_t, status = self.task.get_step(self.rng, self.dt, trial, t+1, a_t)
                         U[t, n] = torch.FloatTensor(u_t_np).to(self.device)
-                        R[t, n] = r_t *  1 #self.discount_factor(t)
+                        R[t, n] = r_t
 
                     M[t, n] = 1
 
@@ -573,8 +572,6 @@ class PolicyGradient:
         n_validation = self.config['n_validation']
         checkfreq = self.config['checkfreq']
 
-        use_x0 = (self.mode == 'continuous')
-
         # Print settings
         items = OrderedDict()
         items['Device'] = str(self.device)
@@ -635,9 +632,6 @@ class PolicyGradient:
         # Training loop
         if hasattr(self.task, 'start_session'):
             self.task.start_session(self.rng)
-
-        grad_norms_policy = []
-        grad_norms_baseline = []
 
         tstart = datetime.datetime.now()
 
@@ -832,340 +826,115 @@ class PolicyGradient:
 
     def _update_baseline(self, results, optimizer):
         """Update baseline to predict discounted returns (value function)."""
-        
-        if not hasattr(self, '_debug_step'):
-            self._debug_step = 0
-        self._debug_step += 1
-        
-        debug_freq = 100
-        verbose_debug = (self._debug_step % debug_freq == 0)
-
-        # Initialize gamma
         if not hasattr(self, 'gamma'):
             if np.isinf(self.config.get('tau_reward', np.inf)):
-                self.gamma = 1
+                self.gamma = 1.0
             else:
                 self.gamma = np.exp(-self.dt / self.config['tau_reward'])
-            self.gamma = min(self.gamma, 0.99999)  # Cap at 0.99
-            print(f"*** Initialized gamma = {self.gamma:.6f} ***")
+            self.gamma = min(self.gamma, 0.99999)
 
-        # Extract data
-        R = results['R']  # Shape (T, B)
-        M = results['M']  # Shape (T, B)
+        R = results['R']
+        M = results['M']
 
-        # Get baseline predictions
         r_policy = results['r_policy']
         A = results['A']
         baseline_inputs = torch.cat([r_policy, A], dim=-1)
         baseline_inputs_trimmed = baseline_inputs[:-1]
         B_size = baseline_inputs_trimmed.shape[1]
         x0 = self.baseline_net.x0.unsqueeze(0).expand(B_size, -1)
-        
+
         z_pred, states_b = self.baseline_net(
             baseline_inputs_trimmed,
             results['Q_b'][:-1],
-            x0
+            x0,
         )
         z_0, _ = self.baseline_net.step_0(x0)
         if z_0.dim() == 2:
             z_0 = z_0.squeeze(-1)
         if z_pred.dim() == 3:
             z_pred = z_pred.squeeze(-1)
-        
-        z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)  # Shape (T, B)
 
-        if verbose_debug:
-            print(f"\n{'='*80}")
-            print(f"BASELINE UPDATE DEBUG - Step {self._debug_step}, κ={self.kappa:.3f}")
-            print(f"{'='*80}")
-            print(f"Rewards R:")
-            print(f"  Mean: {R.mean().item():.6f}, Std: {R.std().item():.6f}")
-            print(f"  Nonzero: {(R != 0).sum().item()}/{R.numel()}")
-            print(f"\nValue predictions V(s):")
-            print(f"  Mean: {z_all.mean().item():.6f}, Std: {z_all.std().item():.6f}")
+        z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)
 
-        # ===== CRITICAL FIX: Use Monte Carlo returns, not 1-step TD =====
-        # Compute actual discounted returns from each state
         with torch.no_grad():
-            returns = self._compute_returns(R, self.gamma)  # Shape (T, B)
-        
-        # TD error = actual return - predicted value
-        delta = returns - z_all
-        
-        # Apply mask
-        delta = delta * M
+            returns = self._compute_returns(R, self.gamma)
+
+        delta = (returns - z_all) * M
         n_valid = M.sum()
 
-        if verbose_debug:
-            print(f"\nTD Error δ = [Return] - V(s):")
-            print(f"  γ = {self.gamma:.6f}")
-            print(f"  Mean: {delta.mean().item():.6f}")
-            print(f"  Std: {delta.std().item():.6f}")
-            print(f"  Min: {delta.min().item():.6f}")
-            print(f"  Max: {delta.max().item():.6f}")
-            
-            # Check at different parts of episode
-            early = delta[:25].std().item()
-            late = delta[-25:].std().item()
-            print(f"  Std in early episode (t<25): {early:.6f}")
-            print(f"  Std in late episode (t>50): {late:.6f}")
-
-        # Risk-sensitive transformation (per-neuron or single value)
-        # For per-neuron kappa, we need to compute the weighted TD error
-        # across neurons in the value network
         if self.kappa_mode == 'per_neuron':
-            # Apply per-neuron eta transformations to the TD error
-            # Each neuron in the baseline network gets its own risk-sensitivity parameter
-
-            # Expand delta to match neuron dimensions: (T, B) -> (T, B, 1)
             delta_expanded = delta.unsqueeze(-1)
-
-            # Create per-neuron modulated deltas
-            # Shape: (T, B, N) where each neuron gets its own eta scaling
-            eta_plus_exp = self.eta_plus_neurons.view(1, 1, -1)  # (1, 1, N)
-            eta_minus_exp = self.eta_minus_neurons.view(1, 1, -1)  # (1, 1, N)
-
-            delta_prime_per_neuron = torch.where(
+            eta_plus_exp = self.eta_plus_neurons.view(1, 1, -1)
+            eta_minus_exp = self.eta_minus_neurons.view(1, 1, -1)
+            delta_prime = torch.where(
                 delta_expanded > 0,
                 eta_plus_exp * delta_expanded,
-                eta_minus_exp * delta_expanded
+                eta_minus_exp * delta_expanded,
+            ).mean(dim=-1)
+        else:
+            delta_prime = torch.where(
+                delta > 0,
+                self.eta_plus * delta,
+                self.eta_minus * delta,
             )
 
-            # Average across neurons to get the final delta_prime (T, B)
-            delta_prime = delta_prime_per_neuron.mean(dim=-1)
-
-            if verbose_debug:
-                print(f"\nRisk-Sensitivity Parameters (PER-NEURON):")
-                print(f"  κ (kappa) mean: {self.kappa:.6f}")
-                print(f"  κ std: {self.kappa_neurons.std().item():.6f}")
-                print(f"  κ range: [{self.kappa_neurons.min().item():.6f}, {self.kappa_neurons.max().item():.6f}]")
-                print(f"  η⁺ mean: {self.eta_plus:.6f}, η⁻ mean: {self.eta_minus:.6f}")
-        else:
-            # Single kappa value (original behavior)
-            eta_plus = self.eta_plus
-            eta_minus = self.eta_minus
-
-            delta_prime = torch.where(delta > 0,
-                                    eta_plus * delta,
-                                    eta_minus * delta)
-
-            if verbose_debug:
-                print(f"\nRisk-Sensitivity Parameters (SINGLE):")
-                print(f"  κ (kappa): {self.kappa:.6f}")
-                print(f"  η⁺: {eta_plus:.6f}, η⁻: {eta_minus:.6f}")
-
-        if verbose_debug:
-            print(f"\nAdvantage δ′:")
-            print(f"  Mean: {delta_prime.mean().item():.6f}")
-            print(f"  Std: {delta_prime.std().item():.6f}")
-
-        # Compute loss
         if n_valid > 0:
-            loss = torch.sum(delta_prime**2 * M) / n_valid
+            loss = torch.sum(delta_prime ** 2 * M) / n_valid
         else:
             loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
-        reg = self.baseline_net.get_regs(x0, states_b, M[:-1])
-        loss += reg
+        loss = loss + self.baseline_net.get_regs(x0, states_b, M[:-1])
 
-        if verbose_debug:
-            print(f"\nLoss: {loss.item():.6f} (reg: {reg.item():.6f})")
-            
-            # Health check
-            mean_to_std = abs(z_all.mean().item() / (z_all.std().item() + 1e-8))
-            print(f"\nValue Function Health:")
-            print(f"  Mean/Std ratio: {mean_to_std:.2f} {'✓' if mean_to_std < 50 else '⚠️  Too high!'}")
-
-        # Update
         optimizer.zero_grad()
         loss.backward()
-        
+
         grad_clip = self.config.get('baseline_grad_clip', None)
         if grad_clip is not None:
             torch.nn.utils.clip_grad_norm_(self.baseline_net.parameters(), grad_clip)
-        
+
         optimizer.step()
 
-        # Store for policy (use delta_prime as advantage)
-        results["delta_prime"] = delta_prime.detach()
-        results["Z_b"] = z_all.detach()
-        
-        if verbose_debug:
-            print(f"{'='*80}\n")
+        results['delta_prime'] = delta_prime.detach()
+        results['Z_b'] = z_all.detach()
 
-        if verbose_debug:
-            print(f"\n{'='*80}")
-            print(f"BASELINE UPDATE DEBUG - Step {self._debug_step}, κ={self.kappa:.3f}")
-            print(f"{'='*80}")
-            
-            # ===== ADD THIS =====
-            print(f"\nBaseline Network State Analysis:")
-            print(f"  x0 (initial state):")
-            print(f"    Mean: {x0.mean().item():.6f}")
-            print(f"    Std: {x0.std().item():.6f}")
-            print(f"    Min: {x0.min().item():.6f}")
-            print(f"    Max: {x0.max().item():.6f}")
-            
-            print(f"\n  states_b (all timesteps):")
-            print(f"    Mean: {states_b.mean().item():.6f}")
-            print(f"    Std: {states_b.std().item():.6f}")
-            print(f"    Min: {states_b.min().item():.6f}")
-            print(f"    Max: {states_b.max().item():.6f}")
-            print(f"    Fraction negative: {(states_b < 0).float().mean().item():.2%}")
-            print(f"    Fraction near zero (|x| < 0.01): {(states_b.abs() < 0.01).float().mean().item():.2%}")
-            
-            print(f"\n  Firing rates (after ReLU):")
-            firing_rates_b = torch.tanh(states_b)
-            print(f"    Mean: {firing_rates_b.mean().item():.6f}")
-            print(f"    Std: {firing_rates_b.std().item():.6f}")
-            print(f"    Fraction dead (= 0): {(firing_rates_b == 0).float().mean().item():.2%}")
-            print(f"    Fraction active (> 0.01): {(firing_rates_b > 0.01).float().mean().item():.2%}")
-            
-            # Per-neuron analysis
-            neuron_activity = firing_rates_b.mean(dim=[0, 1])  # Average over time and batch
-            n_active = (neuron_activity > 0.01).sum().item()
-            n_dead = (neuron_activity < 0.001).sum().item()
-            print(f"\n  Per-neuron statistics:")
-            print(f"    Active neurons (avg activity > 0.01): {n_active}/{self.baseline_net.N}")
-            print(f"    Dead neurons (avg activity < 0.001): {n_dead}/{self.baseline_net.N}")
-            print(f"    Most active neuron: {neuron_activity.max().item():.6f}")
-            print(f"    Least active neuron: {neuron_activity.min().item():.6f}")
-            
     def _update_policy(self, results, optimizer):
         """Update policy network using Monte Carlo returns with risk-sensitive advantage."""
 
-        # Use same debug counter as baseline
-        if not hasattr(self, '_debug_step'):
-            self._debug_step = 0
-        
-        debug_freq = 100
-        verbose_debug = (self._debug_step % debug_freq == 0)
-
-        # --- Extract relevant data ---
         U = results['U']
         A = results['A']
         M = results['M']
         Q_trimmed = results['Q'][:-1]
-        delta_prime = results["delta_prime"]  # Risk-sensitive advantage from baseline
+        delta_prime = results['delta_prime']
 
-        if verbose_debug:
-            print(f"\n{'='*80}")
-            print(f"POLICY UPDATE DEBUG - Step {self._debug_step}, κ={self.kappa:.3f}")
-            print(f"{'='*80}")
-            print(f"Advantage (delta_prime) from baseline:")
-            print(f"  Shape: {delta_prime.shape}")
-            print(f"  Mean: {delta_prime.mean().item():.6f}")
-            print(f"  Std: {delta_prime.std().item():.6f}")
-            print(f"  Min: {delta_prime.min().item():.6f}")
-            print(f"  Max: {delta_prime.max().item():.6f}")
-            print(f"  Positive: {(delta_prime > 0).float().mean().item()*100:.1f}%")
-            print(f"  Negative: {(delta_prime < 0).float().mean().item()*100:.1f}%")
-
-        # --- Forward pass through policy network ---
         U_trimmed = U[:-1]
         B_size = U_trimmed.shape[1]
         x0 = self.policy_net.x0.unsqueeze(0).expand(B_size, -1)
         z_pred, states = self.policy_net(U_trimmed, Q_trimmed, x0)
-        
+
         r_0 = self.policy_net.firing_rate(x0)
         log_z_0 = self.policy_net.log_output(r_0)
-        
+
         r_pred = self.policy_net.firing_rate(states)
         log_z_pred = torch.stack([
             self.policy_net.log_output(r_pred[t]) for t in range(r_pred.shape[0])
         ])
 
-        # --- Compute log probabilities of chosen actions ---
         logpi_0 = torch.sum(log_z_0 * A[0], dim=-1) * M[0]
         logpi_t = torch.sum(log_z_pred * A[1:], dim=-1) * M[1:]
         logpi_all = torch.cat([logpi_0.unsqueeze(0), logpi_t], dim=0)
-        
-        if verbose_debug:
-            print(f"\nLog-probabilities:")
-            print(f"  Shape: {logpi_all.shape}")
-            print(f"  Mean: {logpi_all.mean().item():.6f}")
-            print(f"  Std: {logpi_all.std().item():.6f}")
-            print(f"  Min: {logpi_all.min().item():.6f}")
-            print(f"  Max: {logpi_all.max().item():.6f}")
 
-        # --- REINFORCE objective (Monte Carlo Policy Gradient) ---
-        # ∇J = E[∇log π(a|s) * A(s,a)]
-        # where A(s,a) is the risk-sensitive advantage
         weighted_logpi = logpi_all * delta_prime * M
-        
-        if verbose_debug:
-            print(f"\nWeighted log-probs (log π · δ′):")
-            print(f"  Mean: {weighted_logpi.mean().item():.6f}")
-            print(f"  Sum: {weighted_logpi.sum().item():.6f}")
-            print(f"  This will be divided by batch size {B_size}")
-        
+
         J = torch.sum(weighted_logpi) / B_size
 
-        # Regularization
         reg = self.policy_net.get_regs(x0, states, M[:-1])
         loss = -J + reg
 
-        if verbose_debug:
-            print(f"\nPolicy Loss:")
-            print(f"  Objective J (before negation): {J.item():.6f}")
-            print(f"  Regularization: {reg.item():.6f}")
-            print(f"  Total loss (-J + reg): {loss.item():.6f}")
-
-        # --- Gradient update ---
         optimizer.zero_grad()
         loss.backward()
 
-        if verbose_debug or self.kappa != 0:
-            # Gradient diagnostics
-            total_grad_norm = 0
-            max_grad = 0
-            min_grad = float('inf')
-            nan_params, inf_params = [], []
-
-            for name, param in self.policy_net.named_parameters():
-                if param.grad is not None:
-                    grad_norm = param.grad.norm().item()
-                    total_grad_norm += grad_norm
-                    max_grad = max(max_grad, param.grad.abs().max().item())
-                    min_grad = min(min_grad, param.grad.abs().min().item())
-                    if torch.isnan(param.grad).any():
-                        nan_params.append(name)
-                    if torch.isinf(param.grad).any():
-                        inf_params.append(name)
-            
-            if verbose_debug:
-                print(f"\nGradient Statistics (policy - before clipping):")
-                print(f"  Total norm: {total_grad_norm:.6f}")
-                print(f"  Max absolute: {max_grad:.6f}")
-                print(f"  Min absolute: {min_grad:.6f}")
-
-                if nan_params:
-                    print(f"  ⚠️  NaN gradients in: {nan_params}")
-                if inf_params:
-                    print(f"  ⚠️  Inf gradients in: {inf_params}")
-
-            # Extra warnings for extreme kappa values
-            if abs(self.kappa) > 0.5:
-                if nan_params or inf_params:
-                    print(f"\n⚠️⚠️⚠️  GRADIENT ISSUES WITH κ={self.kappa:.3f}  ⚠️⚠️⚠️")
-                if total_grad_norm > 1000:
-                    print(f"\n⚠️  Very large gradient norm ({total_grad_norm:.1f}) with κ={self.kappa:.3f}")
-
-        # --- Gradient clipping ---
         grad_clip = self.config.get('grad_clip', None)
         if grad_clip is not None:
             torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), grad_clip)
-            if verbose_debug or self.kappa != 0:
-                # Compute gradient norm after clipping
-                total_grad_norm_clipped = 0
-                for param in self.policy_net.parameters():
-                    if param.grad is not None:
-                        total_grad_norm_clipped += param.grad.norm().item()
-                if verbose_debug:
-                    print(f"\nGradient Statistics (policy - after clipping to {grad_clip}):")
-                    print(f"  Total norm: {total_grad_norm_clipped:.6f}")
 
         optimizer.step()
-        
-        if verbose_debug:
-            print(f"{'='*80}\n")

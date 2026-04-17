@@ -1,5 +1,4 @@
 from collections import OrderedDict
-import sys
 
 import torch
 import torch.nn as nn
@@ -116,7 +115,6 @@ class Recurrent(nn.Module):
         bout = self.get('bout')
 
         T = inputs.shape[0]
-        B = x0.shape[0]
 
         x_list = []
         x_t = x0

@@ -4,7 +4,6 @@ Base class for recurrent neural networks in PyTorch.
 from collections import OrderedDict
 import torch
 import torch.nn as nn
-import numpy as np
 
 
 class RecurrentNetwork(nn.Module):

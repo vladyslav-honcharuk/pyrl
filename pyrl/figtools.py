@@ -22,7 +22,6 @@ import matplotlib                 as mpl; mpl.use('Agg') # For compatibility on 
 from   matplotlib.colors          import colorConverter
 import matplotlib.pyplot          as plt
 import mpl_toolkits.mplot3d.art3d as art3d
-from   mpl_toolkits.mplot3d       import Axes3D
 
 from . import utils
 
@@ -584,7 +583,7 @@ class Figure(object):
 
     #/////////////////////////////////////////////////////////////////////////////////////
 
-    def save(self, name=None, path=None, fmt=None, transparent=True, **kwargs):
+    def save(self, name=None, path=None, transparent=True, **kwargs):
         if name is None:
             name = os.path.splitext(sys.argv[0].split(os.path.sep)[-1])[0]
         if not name.startswith('/') and path is None:

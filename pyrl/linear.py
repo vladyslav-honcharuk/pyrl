@@ -3,14 +3,9 @@ import sys
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 from . import matrixtools, nptools, torchtools
-from .debug import DEBUG
 from .recurrent import Recurrent
-
-from . import tasktools
 
 configs_required = ['Nin', 'Nout']
 configs_default = {
