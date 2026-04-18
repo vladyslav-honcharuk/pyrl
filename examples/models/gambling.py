@@ -55,6 +55,11 @@ tmax = fixation + stimulus + decision
 R_ABORTED = -0.5   # Penalty for breaking fixation (reduced to allow learning)
 R_PENALTY = -0.5 # Penalty for not making a choice (reduced to allow learning)
 
+# Initial action bias: start with a stronger preference to maintain fixation
+# until the network has observed the trial state, instead of choosing randomly
+# at t=0 and immediately aborting the trial.
+bout = np.array([3.0, 0.0, 0.0])
+
 # Reward scaling (from JAX code: size/2.5)
 REWARD_SCALE = 2.5
 
@@ -124,7 +129,6 @@ def get_step(rng, dt, trial, t, a):
         if a != actions['FIXATE']:
             status['continue'] = False
             reward = R_ABORTED
-            # return u, reward, status  # End trial immediately
 
     # Stimulus period (25-49 timesteps)
     elif t in epochs['stimulus']:
@@ -142,7 +146,6 @@ def get_step(rng, dt, trial, t, a):
         if a != actions['FIXATE']:
             status['continue'] = False
             reward = R_ABORTED
-            # return u, reward, status  # End trial immediately, don't continue
 
     # Decision period (50-75 timesteps)
     elif t in epochs['decision']:

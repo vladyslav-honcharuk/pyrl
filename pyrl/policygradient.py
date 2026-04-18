@@ -141,6 +141,7 @@ class PolicyGradient:
             'f_out': 'softmax',
             'Win': config['Win'] * np.sqrt(K) / config['Nin'],
             'Win_mask': config['Win_mask'],
+            'bout': config['bout'],
             'fix': config['fix'],
             'L2_r': config['L2_r'],
             'L1_Wrec': config['L1_Wrec'],
@@ -163,7 +164,10 @@ class PolicyGradient:
             'f_out': 'linear',
             'Win': config['baseline_Win'] * np.sqrt(K) / baseline_Nin,
             'Win_mask': config['baseline_Win_mask'],
-            'bout': config['baseline_bout'] if config['baseline_bout'] is not None else config['R_ABORTED'],
+            # Default to a neutral baseline output bias. Initializing the
+            # value network to R_ABORTED can create a zero-advantage fixed
+            # point on tasks with constant abort/no-choice penalties.
+            'bout': config['baseline_bout'] if config['baseline_bout'] is not None else 0.0,
             'x0': config.get('baseline_x0', 0),  # Higher initial state to prevent dead neurons
             'fix': config['baseline_fix'],
             'L2_r': config['baseline_L2_r'],
@@ -201,7 +205,7 @@ class PolicyGradient:
             
             # Calculate gamma now so we can use it for inference/testing
             self.gamma = np.exp(-self.dt / self.config['tau_reward'])
-            self.gamma = min(self.gamma, 0.99999)
+            self.gamma = min(self.gamma, 0.9999)
         else:
             self.discount_factor = lambda t: 1
             self.gamma = 1.0
@@ -846,7 +850,7 @@ class PolicyGradient:
                 self.gamma = 1
             else:
                 self.gamma = np.exp(-self.dt / self.config['tau_reward'])
-            self.gamma = min(self.gamma, 0.99999)  # Cap at 0.99
+            self.gamma = min(self.gamma, 0.9999)  # Cap at 0.99
             print(f"*** Initialized gamma = {self.gamma:.6f} ***")
 
         # Extract data
