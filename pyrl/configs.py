@@ -13,7 +13,7 @@ default = {
     'baseline_p0':           1,
     'lr':                    0.001,
     'baseline_lr':           0.001,
-    'max_iter':              3000,
+    'max_iter':              1000,
     'fix':                   [],
     'baseline_fix':          [],
     'target_reward':         np.inf,

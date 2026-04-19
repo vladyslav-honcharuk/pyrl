@@ -2,7 +2,6 @@
 *.pyc
 *.so
 *.pkl
-*.txt
 *.egg-info/
 build/
 dist/
@@ -12,7 +11,10 @@ tests/
 logtest.py
 rvtest.py
 environment/
-analysis/
-scripts/
-examples/work/figs/
-examples/work/
+venv/
+examples/
+
+# Data outputs
+data/weights/
+data/figures/
+data/trials/
