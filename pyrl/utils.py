@@ -65,16 +65,6 @@ def print_dict(settings_, indent=2, title=None):
     sys.stdout.flush()
 
 
-def copy_to_clipboard(s):
-    """Copy string to clipboard (macOS)."""
-    try:
-        proc = subprocess.Popen('pbcopy', env={'LANG': 'en_US.UTF-8'},
-                                stdin=subprocess.PIPE)
-        proc.communicate(s.encode('utf-8'))
-    except:
-        pass
-
-
 #=========================================================================================
 # Safe division
 #=========================================================================================
@@ -133,15 +123,6 @@ def load(filename):
     """Load object from pickle file."""
     with open(filename, 'rb') as f:
         return pickle.load(f)
-
-
-#=========================================================================================
-# Unit conversion
-#=========================================================================================
-
-def mm_to_inch(mm):
-    """Convert millimeters to inches."""
-    return mm/25.4
 
 
 #=========================================================================================

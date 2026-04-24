@@ -205,19 +205,3 @@ def get_step(rng, dt, trial, t, a):
                 status['correct'] = False
 
     return u, reward, status
-
-
-def terminate(perf):
-    pass
-    # """
-    # Termination criterion: achieve good performance on gambling task.
-
-    # The task is learned when the agent:
-    # 1. Consistently makes decisions (doesn't fixate through decision period)
-    # 2. Chooses higher expected value options at reasonable rate
-    # """
-    # p_decision, p_correct = tasktools.correct_2AFC(perf)
-
-    # # Reasonable criterion: 95% decision rate + 75% accuracy
-    # # 75% accuracy means network prefers higher EV options most of the time
-    # return p_decision >= 0.95 and p_correct >= 0.95

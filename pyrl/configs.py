@@ -8,11 +8,11 @@ required = ['inputs', 'actions', 'tmax', 'n_gradient', 'n_validation']
 default = {
     'Performance':           None,
     'N':                     100,
-    'p0':                    0.1,
+    'p0':                    1,
     'baseline_N':            100,
     'baseline_p0':           1,
-    'lr':                    0.001,
-    'baseline_lr':           0.001,
+    'lr':                    0.0005,
+    'baseline_lr':           0.0005,
     'max_iter':              1000,
     'fix':                   [],
     'baseline_fix':          [],
@@ -44,6 +44,4 @@ default = {
     'L2_Wrec':               1e-5,
     'policy_seed':           1,
     'baseline_seed':         2,
-    'grad_clip':             None,  # Gradient clipping threshold (None = no clipping)
-    'baseline_grad_clip':    None,  # Baseline gradient clipping threshold (None = no clipping)
 }

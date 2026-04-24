@@ -268,37 +268,6 @@ class Model:
         pg.policy_net.load_state_dict(policy_state_dict)
         pg.baseline_net.load_state_dict(baseline_state_dict)
 
-        # Verify weights loaded correctly by checking critical parameters
-        print(f"\nWeight loading verification:")
-        print(f"  Policy network:")
-        for name, param in pg.policy_net.named_parameters():
-            print(f"    {name}: shape={param.shape}, mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}, nonzero={torch.count_nonzero(param.data).item()}/{param.numel()}")
-        print(f"  Baseline network:")
-        for name, param in list(pg.baseline_net.named_parameters())[:3]:
-            print(f"    {name}: shape={param.shape}, mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
-        print(f"  Total policy parameters: {sum(p.numel() for p in pg.policy_net.parameters())}")
-        print(f"  Total baseline parameters: {sum(p.numel() for p in pg.baseline_net.parameters())}")
-
-        print(f"\n{'='*80}")
-        print(f"FINE-TUNING WITH NEW KAPPA")
-        print(f"{'='*80}")
-        print(f"Loaded pre-trained weights from: {pretrained_file}")
-        print(f"Using hyperparameters from pretrained model:")
-        print(f"  Learning rate: {pg.config['lr']}")
-        print(f"  Baseline learning rate: {pg.config['baseline_lr']}")
-        print(f"  Batch size (n_gradient): {pg.config['n_gradient']}")
-        print(f"  Validation trials: {pg.config['n_validation']}")
-        print(f"\nNew kappa (κ): {kappa}")
-        print(f"  η⁺ (positive RPE scaling): {pg.eta_plus}")
-        print(f"  η⁻ (negative RPE scaling): {pg.eta_minus}")
-        if kappa > 0:
-            print(f"  Bias: RISK-SEEKING (optimistic)")
-        elif kappa < 0:
-            print(f"  Bias: RISK-AVERSE (pessimistic)")
-        else:
-            print(f"  Bias: BALANCED (neutral)")
-        print(f"{'='*80}\n")
-
         # Override max_iter if specified
         if max_iter is not None:
             original_max_iter = pg.config['max_iter']

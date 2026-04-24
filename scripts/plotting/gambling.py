@@ -916,10 +916,20 @@ def do(action, args, config):
             0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0
         ]
 
-        # Trial and model files are inside the package under examples/work/
-        examples_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        trials_base = os.path.join(examples_dir, 'work', 'trials')
-        data_base = os.path.join(examples_dir, 'work', 'data')
+        # Get base name from config
+        base_name = config.get('name', 'gambling')
+
+        # Determine repository root (go up from scripts/plotting/)
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        trials_base = os.path.join(repo_root, 'data', 'trials')
+        weights_base = os.path.join(repo_root, 'data', 'weights')
+
+        print("\n" + "="*80)
+        print("MEGA-COMPARISON: Scanning for kappa sweep models")
+        print("="*80)
+        print(f"Trials base: {trials_base}")
+        print(f"Weights base: {weights_base}")
+        print(f"\nLooking for models:")
 
         trialsfiles = {}
         modelfiles = {}
@@ -938,7 +948,7 @@ def do(action, args, config):
                 modelname = f'gambling{suffix}'
 
             trialsfile = os.path.join(trials_base, dirname, 'trials_activity.pkl')
-            modelfile = os.path.join(data_base, modelname, f'{modelname}.pkl')
+            modelfile = os.path.join(weights_base, modelname, f'{modelname}.pkl')
 
             if os.path.exists(trialsfile) and os.path.exists(modelfile):
                 trialsfiles[kappa] = trialsfile
@@ -955,7 +965,7 @@ def do(action, args, config):
         if len(trialsfiles) < 2:
             print(f"\n❌ Only found {len(trialsfiles)} trial files, need at least 2")
             print(f"\n💡 You need to run 'trials-a' action for each kappa model first!")
-            print(f"   Example: python examples/do.py examples/models/gambling.py run examples/analysis/gambling.py trials-a 2 --suffix neg0p8")
+            print(f"   Example: python3 scripts/training/train.py tasks/gambling.py --suffix neg0p8 run scripts/plotting/gambling.py trials-a 5")
             return
 
         # Extract kappa values for which we found files (in order)
@@ -997,7 +1007,7 @@ def do(action, args, config):
         for dist_name, modelname in model_configs.items():
             dirname = modelname
             trialsfile = os.path.join(trials_base, dirname, 'trials_activity.pkl')
-            modelfile = os.path.join(data_base, modelname, f'{modelname}.pkl')
+            modelfile = os.path.join(weights_base, modelname, f'{modelname}.pkl')
 
             if os.path.exists(trialsfile) and os.path.exists(modelfile):
                 trialsfiles[dist_name] = trialsfile

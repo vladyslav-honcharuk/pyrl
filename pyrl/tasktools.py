@@ -46,14 +46,6 @@ def uniform(rng, dt, xmin, xmax):
     return (rng.uniform(xmin, xmax)//dt)*dt
 
 
-def truncated_exponential(rng, dt, mean, xmin=0, xmax=np.inf):
-    """Random exponential duration (multiple of dt) within bounds."""
-    while True:
-        x = rng.exponential(mean)
-        if xmin <= x < xmax:
-            return (x//dt)*dt
-
-
 def divide(x, y):
     """Safe division that returns 0 for division by zero."""
     try:
@@ -70,41 +62,6 @@ def correct_2AFC(perf):
     p_decision = perf.n_decision/perf.n_trials
     p_correct  = divide(perf.n_correct, perf.n_decision)
     return p_decision, p_correct
-
-
-def generate_ei(N, pE=0.8):
-    """
-    Generate E/I signature (Dale's principle).
-
-    Parameters
-    ----------
-    N : int
-        Number of recurrent units.
-    pE : float, optional
-        Fraction of units that are excitatory. Default is 0.8 (typical for cortex).
-
-    Returns
-    -------
-    ei : ndarray
-        Array of +1 (excitatory) and -1 (inhibitory) labels.
-    EXC : list
-        Indices of excitatory units.
-    INH : list
-        Indices of inhibitory units.
-    """
-    assert 0 <= pE <= 1
-
-    Nexc = int(pE*N)
-    Ninh = N - Nexc
-
-    idx = list(range(N))
-    EXC = idx[:Nexc]
-    INH = idx[Nexc:]
-
-    ei = np.ones(N, dtype=int)
-    ei[INH] *= -1
-
-    return ei, EXC, INH
 
 
 class Task:

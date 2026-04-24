@@ -31,7 +31,7 @@ def run_single_analysis(modelfile, suffix, analysis_action, args_list):
     cmd = ['python3', TRAIN_SCRIPT, modelfile]
     if suffix:
         cmd.extend(['--suffix', suffix])
-    cmd.extend(['run', 'analysis/gambling.py', analysis_action] + args_list)
+    cmd.extend(['run', 'scripts/plotting/gambling.py', analysis_action] + args_list)
 
     print(f"\n  [{analysis_action}] Running...")
     print(f"  Command: {' '.join(cmd)}")
@@ -115,21 +115,16 @@ Examples:
 
     base_name = os.path.splitext(os.path.basename(modelfile))[0]
 
-    # Handle suffix formatting - ensure it doesn't duplicate
-    # If suffix doesn't start with underscore and base_name isn't already in it, add separator
+    # Build model name from base name and suffix
+    # The suffix is used as-is without modification
     if suffix:
-        # Remove base_name prefix if present (e.g., "gambling_gaussian_kappa" -> "_gaussian_kappa")
+        # Remove base_name prefix if it's already in the suffix
         if suffix.startswith(base_name):
-            # Extract the actual suffix part
-            suffix_part = suffix[len(base_name):]
-            if suffix_part and not suffix_part.startswith('_'):
-                suffix = '_' + suffix_part
-            else:
-                suffix = suffix_part
-        elif not suffix.startswith('_'):
-            suffix = '_' + suffix
-
-    model_name = f"{base_name}{suffix}" if suffix else base_name
+            model_name = suffix
+        else:
+            model_name = f"{base_name}{suffix}"
+    else:
+        model_name = base_name
     model_path = os.path.join(REPO_ROOT, "data", "weights", model_name, f"{model_name}.pkl")
 
     print("=" * 80)
@@ -187,7 +182,8 @@ Examples:
             'description': 'Analyze value network neurons'
         })
 
-    if not args.skip_temporal:
+    # Note: neural-analysis includes temporal activity plots, so skip standalone temporal-activity if neural-analysis is enabled
+    if not args.skip_temporal and args.skip_neural:
         analysis_steps.append({
             'name': 'temporal-activity',
             'action': 'temporal-activity',
@@ -208,7 +204,7 @@ Examples:
             'name': 'neural-analysis',
             'action': 'neural-analysis',
             'args': [str(kappa)],
-            'description': 'Run neural analysis'
+            'description': 'Run neural analysis (includes temporal activity, predicted values, regression)'
         })
 
     print(f"\nAnalysis steps to run ({len(analysis_steps)} total):")

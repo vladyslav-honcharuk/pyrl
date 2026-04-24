@@ -39,7 +39,7 @@ def run_single_analysis(kappa, suffix, modelfile, base_name, analysis_action, ar
     cmd = ['python3', TRAIN_SCRIPT, modelfile]
     if suffix:
         cmd.extend(['--suffix', suffix])
-    cmd.extend(['run', 'analysis/gambling.py', analysis_action] + args_list)
+    cmd.extend(['run', 'scripts/plotting/gambling.py', analysis_action] + args_list)
 
     msg = f"  [{analysis_action}] Running..."
     if log_queue:
@@ -109,16 +109,13 @@ def run_analysis_for_model(kappa, suffix, modelfile, base_name, log_queue=None):
                                'value-neurons', [str(kappa)], log_queue):
         all_success = False
 
-    # Step 5: Temporal activity plots
-    if not run_single_analysis(kappa, suffix, modelfile, base_name,
-                               'temporal-activity', ['value', '3', str(kappa)], log_queue):
-        all_success = False
-
+    # Step 5: Regression scatter (not included in neural-analysis)
     if not run_single_analysis(kappa, suffix, modelfile, base_name,
                                'regression-scatter', ['policy', str(kappa)], log_queue):
         all_success = False
 
-
+    # Step 6: Neural analysis (includes temporal activity, predicted values, regression)
+    # Note: This includes temporal activity plots, so we don't run that separately
     if not run_single_analysis(kappa, suffix, modelfile, base_name,
                                'neural-analysis', [str(kappa)], log_queue):
         all_success = False
@@ -257,7 +254,8 @@ def main():
     print(f"  2. Generate trials-b (2 per condition)")
     print(f"  3. Behavioral heatmap")
     print(f"  4. Value network neuron analysis")
-    print(f"  5. Temporal activity plots")
+    print(f"  5. Regression scatter analysis")
+    print(f"  6. Neural analysis (temporal activity, predicted values, regression)")
 
     if parallel:
         print(f"\nMode: PARALLEL (max {max_parallel} concurrent)")
