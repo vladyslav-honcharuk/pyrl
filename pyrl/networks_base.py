@@ -45,7 +45,7 @@ class RecurrentNetwork(nn.Module):
         """Convert states to firing rates."""
         return torch.tanh(x) 
 
-    def step_0(self, x0=None):
+    def step_0(self, x0=None, temperature=None):
         """
         Initial step (t=0).
 
@@ -53,6 +53,9 @@ class RecurrentNetwork(nn.Module):
         ----------
         x0 : tensor, optional
             Initial state. If None, uses learned initial state.
+        temperature : tensor, optional
+            Temperature for softmax output (policy networks only).
+            If None, uses default temperature (1.0).
 
         Returns
         -------
@@ -65,10 +68,10 @@ class RecurrentNetwork(nn.Module):
             x0 = self.x0
 
         r = self.firing_rate(x0)
-        z = self.output_layer(r)
+        z = self.output_layer(r, temperature=temperature)
         return z, x0
 
-    def step_t(self, u, q, x_tm1):
+    def step_t(self, u, q, x_tm1, temperature=None):
         """
         Time step t > 0.
 
@@ -80,6 +83,9 @@ class RecurrentNetwork(nn.Module):
             Noise at time t.
         x_tm1 : tensor
             State at time t-1.
+        temperature : tensor, optional
+            Temperature for softmax output (policy networks only).
+            If None, uses default temperature (1.0).
 
         Returns
         -------
@@ -90,7 +96,7 @@ class RecurrentNetwork(nn.Module):
         """
         x_t = self.recurrent_step(u, q, x_tm1)
         r_t = self.firing_rate(x_t)
-        z_t = self.output_layer(r_t)
+        z_t = self.output_layer(r_t, temperature=temperature)
         return z_t, x_t
 
     def forward(self, inputs, noise, x0=None):
@@ -137,8 +143,18 @@ class RecurrentNetwork(nn.Module):
 
         return outputs, states
 
-    def output_layer(self, r):
-        """Apply output transformation."""
+    def output_layer(self, r, temperature=None):
+        """
+        Apply output transformation.
+
+        Parameters
+        ----------
+        r : tensor
+            Firing rates.
+        temperature : tensor, optional
+            Temperature for softmax (policy networks only).
+            Ignored for linear outputs (value networks).
+        """
         raise NotImplementedError
 
     def recurrent_step(self, u, q, x_tm1):

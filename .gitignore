@@ -18,3 +18,4 @@ examples/
 data/weights/
 data/figures/
 data/trials/
+data/*

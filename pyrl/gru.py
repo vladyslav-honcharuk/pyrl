@@ -220,22 +220,56 @@ class GRU(RecurrentNetwork):
 
         return x_t
 
-    def output_layer(self, r):
-        """Apply output transformation."""
+    def output_layer(self, r, temperature=None):
+        """
+        Apply output transformation with optional temperature scaling.
+
+        Parameters
+        ----------
+        r : tensor
+            Firing rates.
+        temperature : tensor, optional
+            Temperature for softmax. Shape: (B,) where B is batch size.
+            Only used if f_out='softmax'. Higher temperature → flatter distribution.
+            If None, uses standard softmax (temperature=1.0).
+        """
         logits = torch.matmul(r, self.Wout) + self.bout
 
         if self.f_out == 'softmax':
+            if temperature is not None:
+                # Apply temperature scaling: softmax(logits / T)
+                # Reshape temperature for broadcasting: (B,) → (B, 1)
+                if temperature.dim() == 1:
+                    temperature = temperature.unsqueeze(-1)
+                logits = logits / temperature
             return F.softmax(logits, dim=-1)
         elif self.f_out == 'linear':
+            # Linear output (value networks) - temperature not applicable
             return logits
         else:
             raise ValueError(f"Unknown output activation: {self.f_out}")
 
-    def log_output(self, r):
-        """Apply log output transformation."""
+    def log_output(self, r, temperature=None):
+        """
+        Apply log output transformation with optional temperature scaling.
+
+        Parameters
+        ----------
+        r : tensor
+            Firing rates.
+        temperature : tensor, optional
+            Temperature for log_softmax. Shape: (B,) where B is batch size.
+            Only used if f_out='softmax'.
+            If None, uses standard log_softmax (temperature=1.0).
+        """
         logits = torch.matmul(r, self.Wout) + self.bout
 
         if self.f_out == 'softmax':
+            if temperature is not None:
+                # Apply temperature scaling
+                if temperature.dim() == 1:
+                    temperature = temperature.unsqueeze(-1)
+                logits = logits / temperature
             return F.log_softmax(logits, dim=-1)
         elif self.f_out == 'linear':
             return torch.log(logits)

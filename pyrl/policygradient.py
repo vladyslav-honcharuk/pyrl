@@ -13,6 +13,12 @@ import torch.optim as optim
 from . import utils
 from . import nptools
 from .networks import Networks
+from .distributional_utils import (
+    quantile_huber_loss,
+    interpolate_quantiles,
+    context_to_quantile_idx,
+    get_default_quantiles
+)
 
 
 class PolicyGradient:
@@ -119,6 +125,16 @@ class PolicyGradient:
         self.loaded_kappa_neurons = save.get('kappa_neurons', None)
         self.loaded_kappa = save.get('kappa', self.config.get('kappa', 0.0))  # Fallback to config
 
+        # Detect if loaded model is distributional (based on baseline output size)
+        baseline_nout = self.baseline_config.get('Nout', 1)
+        if baseline_nout > 1:
+            # This is a distributional model
+            if not self.config.get('use_distributional_critic', False):
+                print(f"\n[ PolicyGradient ] Loaded model has {baseline_nout} quantile outputs.")
+                print("  Automatically enabling distributional critic mode.")
+                self.config['use_distributional_critic'] = True
+                self.config['n_quantiles'] = baseline_nout
+
     def _create_new_model(self, config, dt, seed):
         """Create new model from config."""
         self.config = config
@@ -155,10 +171,14 @@ class PolicyGradient:
         # Baseline network configuration
         K = config['baseline_p0'] * config['N']
         baseline_Nin = self.policy_net.N + len(config['actions'])
+
+        # Dynamic output size: 1 for single V(s), n_quantiles for distributional
+        baseline_Nout = config.get('n_quantiles', 5) if config.get('use_distributional_critic', False) else 1
+
         self.baseline_config = {
             'Nin': baseline_Nin,
             'N': config['baseline_N'],
-            'Nout': 1,
+            'Nout': baseline_Nout,
             'p0': config['baseline_p0'],
             'rho': config['baseline_rho'],
             'f_out': 'linear',
@@ -199,7 +219,7 @@ class PolicyGradient:
         if np.isfinite(self.config['tau_reward']):
             self.alpha_reward = self.dt / self.config['tau_reward']
             self.discount_factor = lambda t: np.exp(-t * self.alpha_reward)
-            
+
             # Calculate gamma now so we can use it for inference/testing
             self.gamma = np.exp(-self.dt / self.config['tau_reward'])
             self.gamma = min(self.gamma, 0.9999)
@@ -219,6 +239,45 @@ class PolicyGradient:
 
         # Performance tracker
         self.Performance = self.config['Performance']
+
+        # ========== Distributional RL Setup ==========
+        # Detect if we're using distributional critic
+        self.use_distributional = self.config.get('use_distributional_critic', False)
+
+        if self.use_distributional:
+            # Number of quantiles
+            self.n_quantiles = self.config.get('n_quantiles', 5)
+
+            # Quantile fractions (tau values)
+            self.tau_values = get_default_quantiles(self.n_quantiles).to(self.device)
+
+            # Huber loss threshold for quantile regression
+            self.quantile_huber_kappa = self.config.get('quantile_huber_kappa', 1.0)
+
+            print(f"\n[ PolicyGradient ] Distributional critic enabled:")
+            print(f"  n_quantiles: {self.n_quantiles}")
+            print(f"  tau_values: {self.tau_values.cpu().numpy()}")
+            print(f"  Huber kappa: {self.quantile_huber_kappa}")
+
+        # Context-based quantile selection
+        self.use_context_quantile = self.config.get('use_context_quantile_selection', False)
+        if self.use_context_quantile and not self.use_distributional:
+            print("\n[ PolicyGradient ] Warning: use_context_quantile_selection requires "
+                  "use_distributional_critic=True. Context quantile selection disabled.")
+            self.use_context_quantile = False
+
+        if self.use_context_quantile:
+            print(f"\n[ PolicyGradient ] Context-based quantile selection enabled")
+
+        # Context-based temperature modulation
+        self.use_context_temperature = self.config.get('use_context_temperature', False)
+        self.temperature_base = self.config.get('temperature_base', 1.0)
+        self.temperature_context_scale = self.config.get('temperature_context_scale', 0.5)
+
+        if self.use_context_temperature:
+            print(f"\n[ PolicyGradient ] Context-based temperature modulation enabled:")
+            print(f"  base_temperature: {self.temperature_base}")
+            print(f"  context_scale: {self.temperature_context_scale}")
 
     def _setup_kappa(self, kappa, kappa_dist, kappa_dist_params, seed):
         """
@@ -394,7 +453,12 @@ class PolicyGradient:
         A = torch.zeros(self.Tmax, n_trials, self.n_actions, device=self.device)
         R = torch.zeros(self.Tmax, n_trials, device=self.device)
         M = torch.zeros(self.Tmax, n_trials, device=self.device)
-        Z_b = torch.zeros(self.Tmax, n_trials, device=self.device)
+
+        # Baseline storage: shape depends on distributional mode
+        if self.use_distributional:
+            Z_b = torch.zeros(self.Tmax, n_trials, self.n_quantiles, device=self.device)
+        else:
+            Z_b = torch.zeros(self.Tmax, n_trials, device=self.device)
 
         # Storage for trial-level information (for risk-sensitive learning)
         prob_l = torch.zeros(n_trials, device=self.device)
@@ -462,8 +526,12 @@ class PolicyGradient:
                     z_t_b, x_t_b = init_b
 
                 Z[t, n] = z_t
-                # Baseline has Nout=1, squeeze to scalar
-                Z_b[t, n] = z_t_b.squeeze() if z_t_b.dim() > 0 else z_t_b
+                # Baseline: store depending on distributional mode
+                if self.use_distributional:
+                    Z_b[t, n] = z_t_b  # Shape: (n_quantiles,)
+                else:
+                    # Single value, squeeze to scalar
+                    Z_b[t, n] = z_t_b.squeeze() if z_t_b.dim() > 0 else z_t_b
 
                 if return_states:
                     r_policy[t, n] = self.policy_net.firing_rate(x_t)
@@ -500,8 +568,12 @@ class PolicyGradient:
                     x_t_b = x_t_b.unsqueeze(0)
                     z_t_b, x_t_b = self.baseline_net.step_t(u_t_b, q_t_b, x_t_b)
                     x_t_b = x_t_b.squeeze(0)
-                    # Baseline has Nout=1, squeeze to scalar
-                    Z_b[t, n] = z_t_b.squeeze() if z_t_b.dim() > 0 else z_t_b
+                    # Baseline: store depending on distributional mode
+                    if self.use_distributional:
+                        Z_b[t, n] = z_t_b.squeeze(0)  # Shape: (n_quantiles,)
+                    else:
+                        # Single value, squeeze to scalar
+                        Z_b[t, n] = z_t_b.squeeze() if z_t_b.dim() > 0 else z_t_b
 
                     if return_states:
                         r_policy[t, n] = r_t_policy
@@ -570,6 +642,88 @@ class PolicyGradient:
             results['r_value'] = r_value
 
         return results
+
+    def _select_quantile(self, q_values, context=None):
+        """
+        Select quantile values based on context signal.
+
+        If context-based quantile selection is disabled, returns the median quantile.
+
+        Parameters
+        ----------
+        q_values : torch.Tensor, shape (T, B, n_quantiles)
+            Predicted quantile values from distributional critic.
+        context : torch.Tensor, shape (B,) or scalar, optional
+            Context signal for quantile selection.
+            Range: typically [-1, +1], but will be normalized via tanh.
+
+        Returns
+        -------
+        selected_values : torch.Tensor, shape (T, B)
+            Selected quantile values (one per timestep and trial).
+        """
+        if not self.use_distributional:
+            # Not distributional, return as-is (should be shape (T, B))
+            return q_values
+
+        if not self.use_context_quantile or context is None:
+            # Use median quantile (index = n_quantiles // 2)
+            median_idx = self.n_quantiles // 2
+            return q_values[:, :, median_idx]
+
+        # Context-based quantile selection
+        B = q_values.shape[1]
+
+        # Ensure context is a tensor
+        if not isinstance(context, torch.Tensor):
+            context = torch.tensor(context, device=self.device)
+
+        # Handle scalar context (broadcast to batch)
+        if context.dim() == 0:
+            context = context.unsqueeze(0).expand(B)
+
+        # Map context to quantile index
+        quantile_idx = context_to_quantile_idx(context, self.n_quantiles)
+
+        # Interpolate between quantiles
+        selected_values = interpolate_quantiles(q_values, quantile_idx)
+
+        return selected_values
+
+    def _compute_temperature(self, batch_size, context=None):
+        """
+        Compute softmax temperature from context signal.
+
+        Parameters
+        ----------
+        batch_size : int
+            Batch size (number of trials).
+        context : torch.Tensor, shape (B,) or scalar, optional
+            Context signal for temperature modulation.
+
+        Returns
+        -------
+        temperature : torch.Tensor, shape (B,)
+            Temperature values for each trial.
+        """
+        if not self.use_context_temperature or context is None:
+            # Return base temperature for all trials
+            return torch.full((batch_size,), self.temperature_base, device=self.device)
+
+        # Ensure context is a tensor
+        if not isinstance(context, torch.Tensor):
+            context = torch.tensor(context, device=self.device)
+
+        # Handle scalar context (broadcast to batch)
+        if context.dim() == 0:
+            context = context.unsqueeze(0).expand(batch_size)
+
+        # Modulate temperature based on context
+        # High context → high temperature → more exploration
+        # Low context → low temperature → more exploitation
+        temperature = self.temperature_base * (1.0 + self.temperature_context_scale * torch.tanh(context))
+
+        return temperature
 
     def train(self, savefile, recover=False):
         """Train the policy and baseline networks."""
@@ -805,8 +959,9 @@ class PolicyGradient:
         ----------
         rewards : torch.Tensor, shape (T, B)
             Immediate rewards at each timestep
-        values : torch.Tensor, shape (T, B)
-            Value predictions at each timestep
+        values : torch.Tensor, shape (T, B) or (T, B, n_quantiles)
+            Value predictions at each timestep. If distributional (3D), 
+            uses median quantile.
         mask : torch.Tensor, shape (T, B)
             Valid timesteps (1 = valid, 0 = invalid)
         gamma : float
@@ -817,6 +972,12 @@ class PolicyGradient:
         td_error : torch.Tensor, shape (T, B)
             Online TD error at each timestep
         """
+        # Handle distributional values: use median quantile
+        if len(values.shape) == 3:
+            # Distributional mode: shape (T, B, n_quantiles)
+            # Use median quantile (index n_quantiles//2)
+            values = values[..., values.shape[-1] // 2]
+        
         T, B = rewards.shape
         td_error = torch.zeros_like(rewards)
 
@@ -835,9 +996,13 @@ class PolicyGradient:
 
 
     def _update_baseline(self, results, optimizer):
-        """Update baseline to predict discounted returns (value function)."""
+        """
+        Update baseline network.
 
-        # Initialize gamma
+        Dispatches to either expectile MSE loss (original) or quantile Huber loss
+        (distributional) based on configuration.
+        """
+        # Initialize gamma if needed
         if not hasattr(self, 'gamma'):
             if np.isinf(self.config.get('tau_reward', np.inf)):
                 self.gamma = 1
@@ -845,6 +1010,34 @@ class PolicyGradient:
                 self.gamma = np.exp(-self.dt / self.config['tau_reward'])
             self.gamma = min(self.gamma, 0.9999)  # Cap at 0.99
 
+        if self.use_distributional:
+            # NEW: Distributional critic with quantile Huber loss
+            loss, z_all_quantiles = self._quantile_huber_loss(results)
+            # Store quantile predictions for policy update
+            results["Z_b_all_quantiles"] = z_all_quantiles.detach()
+        else:
+            # ORIGINAL: Single-value critic with expectile MSE loss
+            loss, z_all, delta_prime = self._expectile_mse_loss(results)
+            # Store for policy (use delta_prime as advantage)
+            results["delta_prime"] = delta_prime.detach()
+            results["Z_b"] = z_all.detach()
+
+        # Update parameters
+        optimizer.zero_grad()
+        loss.backward()
+
+        grad_clip = self.config.get('baseline_grad_clip', None)
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.baseline_net.parameters(), grad_clip)
+
+        optimizer.step()
+
+    def _expectile_mse_loss(self, results):
+        """
+        Original expectile MSE loss for single-value baseline.
+
+        Uses kappa-modulated asymmetric loss to implement risk-sensitive value learning.
+        """
         # Extract data
         R = results['R']  # Shape (T, B)
         M = results['M']  # Shape (T, B)
@@ -856,7 +1049,7 @@ class PolicyGradient:
         baseline_inputs_trimmed = baseline_inputs[:-1]
         B_size = baseline_inputs_trimmed.shape[1]
         x0 = self.baseline_net.x0.unsqueeze(0).expand(B_size, -1)
-        
+
         z_pred, states_b = self.baseline_net(
             baseline_inputs_trimmed,
             results['Q_b'][:-1],
@@ -867,7 +1060,7 @@ class PolicyGradient:
             z_0 = z_0.squeeze(-1)
         if z_pred.dim() == 3:
             z_pred = z_pred.squeeze(-1)
-        
+
         z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)  # Shape (T, B)
 
         # Compute Monte Carlo returns from each state
@@ -876,18 +1069,14 @@ class PolicyGradient:
 
         # Monte Carlo advantage = actual return - predicted value
         delta = returns - z_all
-        
+
         # Apply mask
         delta = delta * M
         n_valid = M.sum()
 
         # Risk-sensitive transformation (per-neuron or single value)
-        # For per-neuron kappa, we need to compute the weighted Monte Carlo advantage
-        # across neurons in the value network
         if self.kappa_mode == 'per_neuron':
             # Apply per-neuron eta transformations to the Monte Carlo advantage
-            # Each neuron in the baseline network gets its own risk-sensitivity parameter
-
             # Expand delta to match neuron dimensions: (T, B) -> (T, B, 1)
             delta_expanded = delta.unsqueeze(-1)
 
@@ -920,20 +1109,86 @@ class PolicyGradient:
         reg = self.baseline_net.get_regs(x0, states_b, M[:-1])
         loss += reg
 
-        # Update
-        optimizer.zero_grad()
-        loss.backward()
-        
-        grad_clip = self.config.get('baseline_grad_clip', None)
-        if grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(self.baseline_net.parameters(), grad_clip)
-        
-        optimizer.step()
+        return loss, z_all, delta_prime
 
-        # Store for policy (use delta_prime as advantage)
-        results["delta_prime"] = delta_prime.detach()
-        results["Z_b"] = z_all.detach()
-            
+    def _quantile_huber_loss(self, results):
+        """
+        Quantile Huber loss for distributional baseline.
+
+        Trains the baseline network to predict multiple quantiles of the return distribution.
+        """
+        # Extract data
+        R = results['R']  # Shape (T, B)
+        M = results['M']  # Shape (T, B)
+
+        # Get baseline quantile predictions
+        r_policy = results['r_policy']
+        A = results['A']
+        baseline_inputs = torch.cat([r_policy, A], dim=-1)
+        baseline_inputs_trimmed = baseline_inputs[:-1]
+        B_size = baseline_inputs_trimmed.shape[1]
+        x0 = self.baseline_net.x0.unsqueeze(0).expand(B_size, -1)
+
+        z_pred, states_b = self.baseline_net(
+            baseline_inputs_trimmed,
+            results['Q_b'][:-1],
+            x0
+        )
+        z_0, _ = self.baseline_net.step_0(x0)
+
+        # Ensure correct shape for distributional output
+        # z_0 shape: (B, n_quantiles) or (B, 1, n_quantiles)
+        # z_pred shape: (T-1, B, n_quantiles)
+        if z_0.dim() == 3:
+            z_0 = z_0.squeeze(1)  # (B, n_quantiles)
+
+        z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)  # Shape (T, B, n_quantiles)
+
+        # Compute Monte Carlo returns from each state
+        with torch.no_grad():
+            returns = self._compute_returns(R, self.gamma)  # Shape (T, B)
+
+        # Quantile Huber loss
+        loss = quantile_huber_loss(
+            pred_quantiles=z_all,
+            targets=returns,
+            tau_values=self.tau_values,
+            kappa=self.quantile_huber_kappa,
+            mask=M
+        )
+
+        # Add regularization
+        reg = self.baseline_net.get_regs(x0, states_b, M[:-1])
+        loss += reg
+
+        return loss, z_all
+
+    def _compute_distributional_advantage(self, returns, z_all_quantiles, context=None):
+        """
+        Compute advantage using context-selected quantile as baseline.
+
+        Parameters
+        ----------
+        returns : torch.Tensor, shape (T, B)
+            Monte Carlo returns.
+        z_all_quantiles : torch.Tensor, shape (T, B, n_quantiles)
+            Predicted quantile values.
+        context : torch.Tensor, shape (B,) or scalar, optional
+            Context signal for quantile selection.
+
+        Returns
+        -------
+        advantage : torch.Tensor, shape (T, B)
+            Advantage values for policy gradient.
+        """
+        # Select appropriate quantile based on context
+        selected_baseline = self._select_quantile(z_all_quantiles, context)
+
+        # Advantage = return - selected quantile baseline
+        advantage = returns - selected_baseline
+
+        return advantage
+
     def _update_policy(self, results, optimizer):
         """Update policy network using Monte Carlo returns with risk-sensitive advantage."""
 
@@ -941,15 +1196,33 @@ class PolicyGradient:
         U = results['U']
         A = results['A']
         M = results['M']
+        R = results['R']
         Q_trimmed = results['Q'][:-1]
-        delta_prime = results["delta_prime"]  # Risk-sensitive advantage from baseline
+
+        # --- Compute advantage ---
+        if self.use_distributional:
+            # NEW: Distributional advantage
+            z_all_quantiles = results["Z_b_all_quantiles"]  # Shape: (T, B, n_quantiles)
+
+            # Compute returns
+            with torch.no_grad():
+                returns = self._compute_returns(R, self.gamma)
+
+            # Context signal (for now, None - will add context input later)
+            context = None
+
+            # Compute distributional advantage
+            advantage = self._compute_distributional_advantage(returns, z_all_quantiles, context)
+        else:
+            # ORIGINAL: Risk-sensitive advantage from expectile MSE
+            advantage = results["delta_prime"]
 
         # --- Forward pass through policy network ---
         U_trimmed = U[:-1]
         B_size = U_trimmed.shape[1]
         x0 = self.policy_net.x0.unsqueeze(0).expand(B_size, -1)
         _, states = self.policy_net(U_trimmed, Q_trimmed, x0)
-        
+
         r_0 = self.policy_net.firing_rate(x0)
         log_z_0 = self.policy_net.log_output(r_0)
 
@@ -963,9 +1236,9 @@ class PolicyGradient:
 
         # --- REINFORCE objective (Monte Carlo Policy Gradient) ---
         # ∇J = E[∇log π(a|s) * A(s,a)]
-        # where A(s,a) is the risk-sensitive advantage
-        weighted_logpi = logpi_all * delta_prime * M
-        
+        # where A(s,a) is the advantage (risk-sensitive or distributional)
+        weighted_logpi = logpi_all * advantage * M
+
         J = torch.sum(weighted_logpi) / B_size
 
         # Regularization

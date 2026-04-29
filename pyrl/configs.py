@@ -44,4 +44,21 @@ default = {
     'L2_Wrec':               1e-5,
     'policy_seed':           1,
     'baseline_seed':         2,
+
+    # ========== Distributional RL Settings ==========
+    # Enable these flags to use distributional critic with quantile regression
+    # All default to False for backward compatibility with existing models
+
+    'use_distributional_critic':      False,  # Enable 5-quantile distributional critic (instead of single V(s))
+    'n_quantiles':                    5,      # Number of quantiles for distributional critic
+    'quantile_huber_kappa':           1.0,    # Huber loss threshold for quantile regression
+
+    # Context-based modulation (requires distributional critic for quantile selection)
+    'use_context_quantile_selection': False,  # Let context signal select which quantile to use for advantage
+    'use_context_temperature':        False,  # Let context signal modulate softmax temperature
+    'temperature_base':               1.0,    # Base temperature for softmax (1.0 = standard softmax)
+    'temperature_context_scale':      0.5,    # How much context affects temperature (0 = no effect)
+
+    # Context input to baseline network (for future extensions)
+    'context_to_baseline':            False,  # Add context as explicit input to baseline network
 }
