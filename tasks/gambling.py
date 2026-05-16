@@ -15,6 +15,8 @@ from pyrl import tasktools
 inputs = tasktools.to_map('FIXATION', 'LEFT_R', 'LEFT_G', 'LEFT_B',
                           'RIGHT_R', 'RIGHT_G', 'RIGHT_B')
 
+# , 'CONTEXT'
+
 # Actions
 actions = tasktools.to_map('FIXATE', 'CHOOSE-LEFT', 'CHOOSE-RIGHT')
 
@@ -39,7 +41,7 @@ color_vector = np.array([
 
 # Training
 n_conditions = 25 * 25  # All possible pairs of left-right choices
-n_gradient   = 64  # Batch size for gradient updates
+n_gradient   = 16  # Batch size for gradient updates
 n_validation = 500      # Increase to get more stable accuracy estimates
 
 # Input noise
@@ -205,3 +207,27 @@ def get_step(rng, dt, trial, t, a):
                 status['correct'] = False
 
     return u, reward, status
+
+
+def generate_psychometric_trial_set(trials_per_comparison=10):
+    """
+    Generate trials designed for psychometric curves.
+    Focus on comparing different probabilities at the same EV.
+    """
+    trials = []
+    
+    # For each EV column (0-4)
+    for col in range(5):
+        # Get all 5 options in this column (same EV, different probabilities)
+        options_in_col = [col + 5*row for row in range(5)]  # [col, col+5, col+10, col+15, col+20]
+        
+        # Create all possible pairings within this column
+        for i, opt1 in enumerate(options_in_col):
+            for opt2 in options_in_col[i+1:]:  # Avoid duplicates and self-pairs
+                # Generate many trials for this specific comparison
+                for _ in range(trials_per_comparison):
+                    # Add both orderings (left-right and right-left)
+                    trials.append({'target_l': opt1, 'target_r': opt2})
+                    trials.append({'target_l': opt2, 'target_r': opt1})
+    
+    return trials

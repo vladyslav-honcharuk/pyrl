@@ -13,7 +13,7 @@ import numpy as np
 
 # Import the modified modules
 from pyrl import configs
-from pyrl.policygradient import PolicyGradient
+from pyrl.policygradient_mc import PolicyGradient
 from pyrl.performance import Performance2AFC
 import tasks.gambling as gambling_task
 

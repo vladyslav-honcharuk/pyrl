@@ -140,7 +140,10 @@ class Model:
                             kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
 
     def train(self, savefile='savefile.pkl', seed=1, recover=False, device='mps', kappa=None,
-              kappa_dist=None, kappa_dist_params=None):
+              kappa_dist=None, kappa_dist_params=None, distributional=False, context_quantile=False,
+              context_temperature=False, use_opponent_modulation=False, context_decision_only=False,
+              n_quantiles=5, quantile_huber_kappa=1.0, temperature_base=1.0,
+              temperature_scale=0.5):
         """
         Train the network.
 
@@ -160,10 +163,44 @@ class Model:
             Distribution for per-neuron kappa ('gaussian', 'uniform', or None).
         kappa_dist_params : dict, optional
             Parameters for kappa distribution.
+        distributional : bool
+            Enable distributional critic (5-quantile value function).
+        context_quantile : bool
+            Enable context-based quantile selection.
+        context_temperature : bool
+            Enable context-based temperature modulation.
+        use_opponent_modulation : bool
+            Enable D1/D2 opponent modulation of policy activations.
+        context_decision_only : bool
+            Apply context input only during the decision period.
+        n_quantiles : int
+            Number of quantiles for distributional critic.
+        quantile_huber_kappa : float
+            Huber loss threshold for quantile regression.
+        temperature_base : float
+            Base softmax temperature.
+        temperature_scale : float
+            Context scale for temperature modulation.
         """
         # Default kappa to 0.0 if not specified
         if kappa is None:
             kappa = 0.0
+        
+        # Add distributional flags to config
+        if distributional:
+            self.config['use_distributional_critic'] = True
+            self.config['n_quantiles'] = n_quantiles
+            self.config['quantile_huber_kappa'] = quantile_huber_kappa
+            if context_quantile:
+                self.config['use_context_quantile_selection'] = True
+            if context_temperature:
+                self.config['use_context_temperature'] = True
+                self.config['temperature_base'] = temperature_base
+                self.config['temperature_context_scale'] = temperature_scale
+        if use_opponent_modulation:
+            self.config['use_opponent_modulation'] = True
+        if context_decision_only:
+            self.config['context_decision_only'] = True
 
         if recover and os.path.isfile(savefile):
             pg = self.get_pg(savefile, load='current', device=device, kappa=kappa,

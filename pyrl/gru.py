@@ -38,7 +38,23 @@ class GRU(RecurrentNetwork):
             'L1_Wrec': 0,
             'L2_Wrec': 0,
             'fix': [],
-            'ei': None
+            'ei': None,
+            'dopamine_heterogeneous_sensitivity': False,
+            'dopamine_sensitivity_min': 0.3,
+            'dopamine_sensitivity_max': 1.0,
+            'dopamine_sensitivity_learned': False,
+            'dopamine_sensitivity_seed': seed,
+            'dopamine_bias_enabled': False,
+            'dopamine_bias_learned': True,
+            'dopamine_bias_init': 0.0,
+            'dopamine_bias_max_abs': 0.3,
+            'dopamine_modulation_mode': 'linear',
+            'dopamine_hill_base_da': 1.0,
+            'dopamine_hill_da_range': 1.0,
+            'dopamine_hill_ec50_d1': 1.0,
+            'dopamine_hill_ec50_d2': 0.07,
+            'dopamine_hill_coefficient': 1.0,
+            'dopamine_hill_gain_scale': 2.0,
         }
 
         self.config = {**defaults, **config}
@@ -59,6 +75,8 @@ class GRU(RecurrentNetwork):
             self._initialize_params(seed, masks)
         else:
             self._load_params(params, masks)
+        self._setup_dopamine_sensitivity(seed, params=params)
+        self._setup_dopamine_bias(params=params)
 
         # Set output activation
         self.f_out = self.config['f_out']
@@ -179,7 +197,7 @@ class GRU(RecurrentNetwork):
             return param * mask
         return param
 
-    def recurrent_step(self, u, q, x_tm1):
+    def recurrent_step(self, u, q, x_tm1, dopamine_signal=None):
         """
         Single GRU step.
 
@@ -206,8 +224,9 @@ class GRU(RecurrentNetwork):
         state_inputs = inputs_t[:, :self.N]
         gate_inputs = inputs_t[:, self.N:]
 
-        # Firing rate from previous state
+        # Firing rate from previous state, optionally modulated by dopamine.
         r_tm1 = torch.tanh(x_tm1)
+        r_tm1 = self._apply_dopamine_modulation(r_tm1, dopamine_signal)
 
         # Gate values
         gate_values = torch.sigmoid(torch.matmul(r_tm1, Wrec_gates) + gate_inputs)
@@ -220,7 +239,7 @@ class GRU(RecurrentNetwork):
 
         return x_t
 
-    def output_layer(self, r, temperature=None):
+    def output_layer(self, r, temperature=None, return_logits=False):
         """
         Apply output transformation with optional temperature scaling.
 
@@ -232,8 +251,13 @@ class GRU(RecurrentNetwork):
             Temperature for softmax. Shape: (B,) where B is batch size.
             Only used if f_out='softmax'. Higher temperature → flatter distribution.
             If None, uses standard softmax (temperature=1.0).
+        return_logits : bool
+            If True, return raw logits before softmax. Default: False.
         """
         logits = torch.matmul(r, self.Wout) + self.bout
+
+        if return_logits:
+            return logits
 
         if self.f_out == 'softmax':
             if temperature is not None:
@@ -297,30 +321,34 @@ class GRU(RecurrentNetwork):
         regs = torch.tensor(0.0, device=x.device)
 
         # L1 recurrent weights
-        if self.config['L1_Wrec'] > 0:
+        if self.config.get('L1_Wrec', 0) > 0:
             W = self._apply_mask('Wrec')
             regs += self.config['L1_Wrec'] * torch.mean(torch.abs(W))
 
         # L2 recurrent weights
-        if self.config['L2_Wrec'] > 0:
+        if self.config.get('L2_Wrec', 0) > 0:
             W_gates = self._apply_mask('Wrec_gates')
             W = self._apply_mask('Wrec')
             reg = torch.sum(W_gates ** 2) + torch.sum(W ** 2)
             size = W_gates.numel() + W.numel()
             regs += self.config['L2_Wrec'] * reg / size
 
-        # L2 firing rate
-        if self.config['L2_r'] > 0:
-            # Expand mask to match state dimensions
-            M_expanded = M.unsqueeze(-1).expand_as(x)
-
-            # Combine t=0 with t>0
+        if self.config.get('L2_r', 0) > 0 or self.config.get('activity_balance', 0) > 0:
             x_all = torch.cat([x0.unsqueeze(0), x], dim=0)
-
-            # Firing rates
             r = torch.tanh(x_all)
+            M_all = torch.cat([torch.ones_like(M[:1]), M], dim=0)
+            M_expanded = M_all.unsqueeze(-1).expand_as(r)
 
-            # Regularization
+        # L2 firing rate
+        if self.config.get('L2_r', 0) > 0:
             regs += self.config['L2_r'] * torch.sum((r ** 2) * M_expanded) / torch.sum(M_expanded)
+
+        # Penalize concentrating activity in only a few neurons.
+        if self.config.get('activity_balance', 0) > 0:
+            valid = torch.sum(M_all).clamp_min(1.0)
+            mean_abs = torch.sum(torch.abs(r) * M_expanded, dim=(0, 1)) / valid
+            p = mean_abs / mean_abs.sum().clamp_min(1e-8)
+            concentration = torch.sum(p ** 2) - (1.0 / r.shape[-1])
+            regs += self.config['activity_balance'] * concentration
 
         return regs

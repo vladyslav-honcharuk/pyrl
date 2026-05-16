@@ -65,17 +65,6 @@ class PolicyGradient:
         # Setup
         self._setup_training()
 
-        # Setup optostimulation parameters
-        self.opto_stim_offset = self.config.get('opto_stim_offset', 0.0)
-        self.opto_stim_gain = self.config.get('opto_stim_gain', 1.0)
-        self.opto_stim_phase = self.config.get('opto_stim_phase', 'all')
-
-        if self.opto_stim_offset != 0.0 or self.opto_stim_gain != 1.0:
-            print(f"\n[ PolicyGradient ] Optogenetic VTA stimulation ENABLED (inference only)")
-            print(f"  Offset: {self.opto_stim_offset:+.3f} (constant dopamine shift)")
-            print(f"  Gain: {self.opto_stim_gain:.2f}× (RPE amplification)")
-            print(f"  Phase: {self.opto_stim_phase}")
-
         # Setup kappa (per-neuron or single value)
         self.kappa_dist = kappa_dist
         self.kappa_dist_params = kappa_dist_params
@@ -116,18 +105,6 @@ class PolicyGradient:
         # Policy network
         self.policy_config = save['policy_config']
         self.policy_config['alpha'] = alpha
-        for key in (
-            'dopamine_modulation_mode',
-            'dopamine_hill_base_da',
-            'dopamine_hill_da_range',
-            'dopamine_hill_ec50_d1',
-            'dopamine_hill_ec50_d2',
-            'dopamine_hill_coefficient',
-            'dopamine_hill_gain_scale',
-            'dopamine_bias_max_abs',
-        ):
-            if key in self.config:
-                self.policy_config[key] = self.config[key]
 
         Network = Networks[self.config['network_type']]
         self.policy_net = Network(self.policy_config, params=params_p,
@@ -184,26 +161,9 @@ class PolicyGradient:
             'bout': config['bout'],
             'fix': config['fix'],
             'L2_r': config['L2_r'],
-            'activity_balance': config.get('activity_balance', 0),
             'L1_Wrec': config['L1_Wrec'],
             'L2_Wrec': config['L2_Wrec'],
-            'alpha': alpha,
-            'dopamine_heterogeneous_sensitivity': config.get('dopamine_heterogeneous_sensitivity', False),
-            'dopamine_sensitivity_min': config.get('dopamine_sensitivity_min', 0.3),
-            'dopamine_sensitivity_max': config.get('dopamine_sensitivity_max', 1.0),
-            'dopamine_sensitivity_learned': config.get('dopamine_sensitivity_learned', False),
-            'dopamine_sensitivity_seed': config.get('policy_seed', seed) + 1000,
-            'dopamine_bias_enabled': config.get('dopamine_bias_enabled', False),
-            'dopamine_bias_learned': config.get('dopamine_bias_learned', True),
-            'dopamine_bias_init': config.get('dopamine_bias_init', 0.0),
-            'dopamine_bias_max_abs': config.get('dopamine_bias_max_abs', 0.3),
-            'dopamine_modulation_mode': config.get('dopamine_modulation_mode', 'linear'),
-            'dopamine_hill_base_da': config.get('dopamine_hill_base_da', 1.0),
-            'dopamine_hill_da_range': config.get('dopamine_hill_da_range', 1.0),
-            'dopamine_hill_ec50_d1': config.get('dopamine_hill_ec50_d1', 1.0),
-            'dopamine_hill_ec50_d2': config.get('dopamine_hill_ec50_d2', 0.07),
-            'dopamine_hill_coefficient': config.get('dopamine_hill_coefficient', 1.0),
-            'dopamine_hill_gain_scale': config.get('dopamine_hill_gain_scale', 2.0),
+            'alpha': alpha
         }
 
         Network = Networks[config['network_type']]
@@ -231,7 +191,6 @@ class PolicyGradient:
             'x0': config.get('baseline_x0', 0),  # Higher initial state to prevent dead neurons
             'fix': config['baseline_fix'],
             'L2_r': config['baseline_L2_r'],
-            'activity_balance': config.get('baseline_activity_balance', 0),
             'L1_Wrec': config['L1_Wrec'],
             'L2_Wrec': config['L2_Wrec'],
             'alpha': alpha
@@ -348,17 +307,6 @@ class PolicyGradient:
             print(f"  Input dim: {self.config['baseline_N']} (baseline hidden units)")
             print(f"  Output dim: 1 (scalar context)")
             print(f"  Learning rate: {self.context_projection_lr}")
-
-        # RPE-based D1/D2 modulation
-        self.use_rpe_modulation = self.config.get('use_rpe_modulation', False)
-        if self.use_rpe_modulation:
-            self.rpe_modulation_gain = self.config.get('rpe_modulation_gain', 1.0)
-            self.rpe_modulation_clamp = self.config.get('rpe_modulation_clamp', 1.0)
-
-            print(f"\n[ PolicyGradient ] RPE-based D1/D2 modulation enabled:")
-            print(f"  RPE gain: {self.rpe_modulation_gain}")
-            print(f"  RPE clamp: [-{self.rpe_modulation_clamp}, +{self.rpe_modulation_clamp}]")
-            print("  Mechanism: Continuous RPE → tonic dopamine → D1/D2 receptor occupancy")
 
     def _setup_kappa(self, kappa, kappa_dist, kappa_dist_params, seed):
         """
@@ -522,35 +470,6 @@ class PolicyGradient:
             f"got {context_distribution!r}"
         )
 
-    def sample_vta_contexts(self, n_trials):
-        """Sample trial-constant VTA dopamine contexts in dopamine units."""
-        dist = self.config.get('vta_context_distribution', 'uniform')
-        weight = self.config.get('vta_context_weight', 1.0)
-
-        if dist == 'uniform':
-            low = self.config.get('vta_context_low', -0.9)
-            high = self.config.get('vta_context_high', 0.9)
-            if high < low:
-                raise ValueError("vta_context_high must be greater than or equal to vta_context_low")
-            samples = torch.empty(n_trials, device=self.device).uniform_(low, high)
-        elif dist == 'gaussian':
-            mean = self.config.get('vta_context_mean', 0.0)
-            std = self.config.get('vta_context_std', 0.3)
-            low = self.config.get('vta_context_low', -0.9)
-            high = self.config.get('vta_context_high', 0.9)
-            if std < 0:
-                raise ValueError("vta_context_std must be non-negative")
-            if high < low:
-                raise ValueError("vta_context_high must be greater than or equal to vta_context_low")
-            samples = torch.empty(n_trials, device=self.device).normal_(mean, std).clamp_(low, high)
-        else:
-            raise ValueError(
-                "vta_context_distribution must be 'uniform' or 'gaussian', "
-                f"got {dist!r}"
-            )
-
-        return samples * weight
-
     def run_trials(self, trials, init=None, init_b=None, return_states=False,
                    perf=None, progress_bar=False, context_input=None, training=False,
                    context_sampling=None):
@@ -605,17 +524,12 @@ class PolicyGradient:
                 contexts = torch.full((n_trials,), float(context_input), device=self.device)
             else:
                 contexts = torch.tensor(context_input, device=self.device)
-        elif training and self.config.get('training_context_input', True):
+        elif training:
             # Training mode: sample c from the configured distribution.
             contexts = self.sample_training_contexts(n_trials)
         else:
             # Default fallback
             contexts = torch.zeros(n_trials, device=self.device)
-
-        if training and self.config.get('vta_training_context', False):
-            vta_contexts = self.sample_vta_contexts(n_trials)
-        else:
-            vta_contexts = torch.zeros(n_trials, device=self.device)
 
         # Storage
         U = torch.zeros(self.Tmax, n_trials, self.Nin, device=self.device)
@@ -628,10 +542,6 @@ class PolicyGradient:
         Policy_Values = torch.zeros(self.Tmax, n_trials, self.Nout, device=self.device)
         Policy_D1_Pull = torch.zeros(self.Tmax, n_trials, self.Nout, device=self.device)
         Policy_D2_Pull = torch.zeros(self.Tmax, n_trials, self.Nout, device=self.device)
-
-        # Storage for continuous RPE signals (if RPE modulation is enabled)
-        if self.use_rpe_modulation:
-            RPE_continuous = torch.zeros(self.Tmax, n_trials, device=self.device)
 
         # Baseline storage: shape depends on distributional mode
         if self.use_distributional:
@@ -651,7 +561,6 @@ class PolicyGradient:
 
         if return_states:
             r_policy = torch.zeros(self.Tmax, n_trials, self.policy_net.N, device=self.device)
-            r_policy_mod = torch.zeros(self.Tmax, n_trials, self.policy_net.N, device=self.device)
             r_value = torch.zeros(self.Tmax, n_trials, self.baseline_net.N, device=self.device)
 
         if perf is None:
@@ -697,7 +606,6 @@ class PolicyGradient:
                 else:
                     z_t, x_t = init
                     z_t_b, x_t_b = init_b
-                prev_dopamine_signal = torch.tensor([0.0], device=self.device)
 
                 Z[t, n] = z_t
                 if self.use_distributional:
@@ -707,26 +615,21 @@ class PolicyGradient:
 
                 if return_states:
                     r_t_policy = self.policy_net.firing_rate(x_t)
-                    r_policy[t, n] = r_t_policy
+                    ctx_val = self._context_for_step(trial, t, contexts[n])
+                    r_t_policy_mod = self._apply_opponent_modulation(
+                        r_t_policy.unsqueeze(0),
+                        torch.as_tensor([ctx_val], device=self.device)
+                    ).squeeze(0)
+                    r_policy[t, n] = r_t_policy_mod
                     r_value[t, n] = self.baseline_net.firing_rate(x_t_b)
 
                 # --- ACTION SELECTION ---
                 r_t_for_action = self.policy_net.firing_rate(x_t.unsqueeze(0))
-
-                # Compute modulation signal (either context or RPE-based)
-                if self.use_rpe_modulation:
-                    # At t=0, RPE is 0 (no previous value to compare)
-                    modulation_signal = torch.tensor([0.0], device=self.device)
-                else:
-                    ctx_val = self._context_for_step(trial, t, contexts[n])
-                    modulation_signal = torch.as_tensor([ctx_val], device=self.device)
-
+                ctx_val = self._context_for_step(trial, t, contexts[n])
                 r_t_for_action = self._apply_opponent_modulation(
                     r_t_for_action,
-                    modulation_signal
+                    torch.as_tensor([ctx_val], device=self.device)
                 )
-                if return_states:
-                    r_policy_mod[t, n] = r_t_for_action.squeeze(0).detach()
                 logits_t = self.policy_net.output_layer(r_t_for_action, temperature=1.0, return_logits=True)
                 
                 # --- NEW: Extract the Policy's Value Computations ---
@@ -787,19 +690,21 @@ class PolicyGradient:
                     u_t = U[t-1, n:n+1]
                     q_t = Q[t, n:n+1]
                     x_t = x_t.unsqueeze(0)
-                    recurrent_dopamine = prev_dopamine_signal if self.use_rpe_modulation else None
-                    z_t, x_t = self.policy_net.step_t(
-                        u_t, q_t, x_t, dopamine_signal=recurrent_dopamine
-                    )
+                    z_t, x_t = self.policy_net.step_t(u_t, q_t, x_t)
                     x_t = x_t.squeeze(0)
                     Z[t, n] = z_t
 
                     r_t_policy = self.policy_net.firing_rate(x_t)
+                    ctx_val = self._context_for_step(trial, t, contexts[n])
+                    r_t_policy_mod = self._apply_opponent_modulation(
+                        r_t_policy.unsqueeze(0),
+                        torch.as_tensor([ctx_val], device=self.device)
+                    ).squeeze(0)
 
                     if self.config.get('baseline_include_state', False):
-                        u_t_b = torch.cat([U[t-1, n], r_t_policy, A[t-1, n]], dim=-1).unsqueeze(0)
+                        u_t_b = torch.cat([U[t-1, n], r_t_policy_mod, A[t-1, n]], dim=-1).unsqueeze(0)
                     else:
-                        u_t_b = torch.cat([r_t_policy, A[t-1, n]], dim=-1).unsqueeze(0)
+                        u_t_b = torch.cat([r_t_policy_mod, A[t-1, n]], dim=-1).unsqueeze(0)
                     q_t_b = Q_b[t, n:n+1]
                     x_t_b = x_t_b.unsqueeze(0)
                     z_t_b, x_t_b = self.baseline_net.step_t(u_t_b, q_t_b, x_t_b)
@@ -811,57 +716,16 @@ class PolicyGradient:
                         Z_b[t, n] = z_t_b.squeeze() if z_t_b.dim() > 0 else z_t_b
 
                     if return_states:
-                        r_policy[t, n] = r_t_policy
+                        r_policy[t, n] = r_t_policy_mod
                         r_value[t, n] = self.baseline_net.firing_rate(x_t_b)
 
                     # --- ACTION SELECTION ---
                     r_t_for_action = self.policy_net.firing_rate(x_t.unsqueeze(0))
-
-                    # Compute modulation signal (either RPE-based or context-based)
-                    if self.use_rpe_modulation:
-                        # Compute continuous RPE: δ(t) = r(t-1) + γ*V(t) - V(t-1)
-                        # Get scalar values from potentially distributional baseline
-                        if self.use_distributional:
-                            if self.use_quantile_mean_for_ev:
-                                v_t = compute_expected_value_from_quantiles(
-                                    Z_b[t, n].unsqueeze(0).unsqueeze(0),
-                                    self.tau_values, method='mean'
-                                ).squeeze()
-                                v_tm1 = compute_expected_value_from_quantiles(
-                                    Z_b[t-1, n].unsqueeze(0).unsqueeze(0),
-                                    self.tau_values, method='mean'
-                                ).squeeze()
-                            else:
-                                v_t = Z_b[t, n, Z_b.shape[-1] // 2]
-                                v_tm1 = Z_b[t-1, n, Z_b.shape[-1] // 2]
-                        else:
-                            v_t = Z_b[t, n]
-                            v_tm1 = Z_b[t-1, n]
-
-                        # RPE = r(t-1) + γ*V(t) - V(t-1)
-                        # Pass timestep for phase-specific optostimulation
-                        phase = self._get_task_phase(t)
-                        rpe_signal = self._compute_rpe_signal(
-                            R[t-1, n],
-                            v_t,
-                            v_tm1,
-                            timestep=t,
-                            phase=phase,
-                            dopamine_offset=vta_contexts[n]
-                        )
-                        RPE_continuous[t, n] = rpe_signal
-                        modulation_signal = rpe_signal.unsqueeze(0)
-                        prev_dopamine_signal = modulation_signal.detach()
-                    else:
-                        ctx_val = self._context_for_step(trial, t, contexts[n])
-                        modulation_signal = torch.as_tensor([ctx_val], device=self.device)
-
+                    ctx_val = self._context_for_step(trial, t, contexts[n])
                     r_t_for_action = self._apply_opponent_modulation(
                         r_t_for_action,
-                        modulation_signal
+                        torch.as_tensor([ctx_val], device=self.device)
                     )
-                    if return_states:
-                        r_policy_mod[t, n] = r_t_for_action.squeeze(0).detach()
                     logits_t = self.policy_net.output_layer(r_t_for_action, temperature=1.0, return_logits=True)
                     
                     # --- NEW: Extract the Policy's Value Computations ---
@@ -946,7 +810,6 @@ class PolicyGradient:
             'U': U, 'Q': Q, 'Q_b': Q_b, 'Z': Z, 'Z_b': Z_b,
             'A': A, 'R': R, 'M': M, 'perf': perf,
             'contexts': contexts,
-            'vta_contexts': vta_contexts,
             'prob_l': prob_l, 'prob_r': prob_r,
             'size_l': size_l, 'size_r': size_r,
             'RPE_objective': RPE_objective,
@@ -955,11 +818,8 @@ class PolicyGradient:
             'Policy_D1_Pull': Policy_D1_Pull,   # NEW
             'Policy_D2_Pull': Policy_D2_Pull    # NEW
         }
-        if self.use_rpe_modulation:
-            results['RPE_continuous'] = RPE_continuous  # Continuous RPE used for D1/D2 modulation
         if return_states:
             results['r_policy'] = r_policy
-            results['r_policy_mod'] = r_policy_mod
             results['r_value'] = r_value
 
         return results
@@ -1287,7 +1147,6 @@ class PolicyGradient:
                         # Compute mean reward
                         mean_reward = torch.sum(val_results['R'] * val_results['M']).item() / n_validation
 
-
                         # Save if best
                         record = {
                             'iter': iter_,
@@ -1359,23 +1218,6 @@ class PolicyGradient:
                         error = torch.sqrt(torch.sum((Z_b_error - V)**2 * val_results['M']) /
                                           torch.sum(val_results['M'])).item()
                         items['Prediction error'] = f'{error}'
-
-                        # ==========================================
-                        # CRITIC CAPACITY DIAGNOSTICS
-                        # ==========================================
-                        try:
-                            crit_diag = self.diagnose_critic(n_trials=200)
-                            items['V range'] = f"[{crit_diag['V_min']:.2f}, {crit_diag['V_max']:.2f}]"
-                            items['Return range'] = f"[{crit_diag['Return_min']:.2f}, {crit_diag['Return_max']:.2f}]"
-                            items['V coverage'] = f"{crit_diag['V_range_coverage']:.2%}"
-                            items['V bias'] = f"{crit_diag['V_minus_Return_bias']:+.3f}"
-                            items['V RMSE'] = f"{crit_diag['V_RMSE']:.3f}"
-                            items['Terminal V vs R'] = (
-                                f"{crit_diag['Terminal_V_mean']:+.3f} vs "
-                                f"{crit_diag['Terminal_R_mean']:+.3f}"
-                            )
-                        except Exception as e:
-                            items['Critic diag'] = f"Crash: {str(e)}"
 
                         # ==========================================
                         # LIVE CONTEXT DIAGNOSTICS
@@ -1450,18 +1292,6 @@ class PolicyGradient:
                 # Update policy network (and context projection if enabled)
                 self._update_policy(train_results, policy_optimizer, context_projection_optimizer)
 
-                # Learning rate decay (biological synaptic consolidation)
-                # Formula: lr(t) = lr_0 / (1 + decay * t)
-                if self.config.get('baseline_lr_decay', 0) > 0:
-                    new_baseline_lr = baseline_lr / (1 + self.config['baseline_lr_decay'] * iter_)
-                    for param_group in baseline_optimizer.param_groups:
-                        param_group['lr'] = new_baseline_lr
-
-                if self.config.get('lr_decay', 0) > 0:
-                    new_policy_lr = lr / (1 + self.config['lr_decay'] * iter_)
-                    for param_group in policy_optimizer.param_groups:
-                        param_group['lr'] = new_policy_lr
-
         except KeyboardInterrupt:
             print(f"Training interrupted by user during iteration {iter_}.")
             sys.exit(0)
@@ -1521,9 +1351,9 @@ class PolicyGradient:
         td_error = torch.zeros_like(rewards)
 
         for t in range(T - 1):
-            # TD error = r(t) + γ*V(t+1)*M(t+1) - V(t)
-            # This wipes out the hallucinated V(t+1) if the trial ended at t
-            td_error[t] = rewards[t] + gamma * values[t+1] * mask[t+1] - values[t]
+            # TD error = r(t) + γ*V(t+1) - V(t)
+            # This ONLY uses information available up to time t+1
+            td_error[t] = rewards[t] + gamma * values[t+1] - values[t]
 
         # Last timestep: no future value
         td_error[T-1] = rewards[T-1] - values[T-1]
@@ -1535,37 +1365,30 @@ class PolicyGradient:
 
 
     def _update_baseline(self, results, optimizer):
-        """Update baseline network, then recompute V with the UPDATED critic
-        so the policy gets a fresh (non-stale) baseline value."""
-        # Ensure gamma is set
-        if not hasattr(self, 'gamma'):
-            if np.isinf(self.config.get('tau_reward', np.inf)):
-                self.gamma = 1
-            else:
-                self.gamma = np.exp(-self.dt / self.config['tau_reward'])
-            self.gamma = min(self.gamma, 0.9999)
+            """Update baseline network using standard MSE."""
+            # Ensure gamma is set
+            if not hasattr(self, 'gamma'):
+                if np.isinf(self.config.get('tau_reward', np.inf)):
+                    self.gamma = 1
+                else:
+                    self.gamma = np.exp(-self.dt / self.config['tau_reward'])
+                self.gamma = min(self.gamma, 0.9999)
 
-        # === Critic update step ===
-        loss, _ = self._standard_mse_loss(results)
+            # Call the new Standard MSE loss
+            loss, z_all = self._standard_mse_loss(results)
+            
+            # Store unbiased Z_b for the policy update
+            results["Z_b"] = z_all.detach()
 
-        optimizer.zero_grad()
-        loss.backward()
+            # Update parameters
+            optimizer.zero_grad()
+            loss.backward()
 
-        grad_clip = self.config.get('baseline_grad_clip', None)
-        if grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(self.baseline_net.parameters(), grad_clip)
+            grad_clip = self.config.get('baseline_grad_clip', None)
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(self.baseline_net.parameters(), grad_clip)
 
-        optimizer.step()
-
-        # === CRITICAL: recompute V with the UPDATED critic ===
-        # This is the fix. The old code stored z_all BEFORE optimizer.step(),
-        # giving the policy a stale baseline. For TD(0)/GAE this is fatal because
-        # the advantage formula directly uses V; for MC it's just a stale control
-        # variate (still unbiased) but it's strictly better to be fresh.
-        with torch.no_grad():
-            _, z_all_fresh = self._standard_mse_loss(results)
-
-        results["Z_b"] = z_all_fresh.detach()
+            optimizer.step()
 
     def _standard_mse_loss(self, results):
             """Asymmetric MSE loss so the Critic learns context-modulated (subjective) values."""
@@ -1598,22 +1421,10 @@ class PolicyGradient:
             z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)
 
             with torch.no_grad():
-                if self.config.get('advantage_mode', 'mc') == 'mc':
-                    # Monte Carlo: use full episode returns
-                    target = self._compute_returns(R, self.gamma)
-                else:
-                    # TD(0): use bootstrapped one-step returns
-                    target = torch.zeros_like(z_all)
-                    target[:-1] = R[:-1] + self.gamma * z_all[1:].detach() * M[1:]
-                    target[-1] = R[-1]
-                
-            # with torch.no_grad():
-            #     target = self._compute_lambda_returns(
-            #         R, z_all.detach(), M, self.gamma,
-            #         lam=self.config.get('td_lambda', 0.99)
-            #     )
-            # Delta is Target - Prediction
-            delta = target - z_all
+                returns = self._compute_returns(R, self.gamma)
+
+            # 1. Compute standard delta
+            delta = returns - z_all
             
             # 2. Derive Bounded Context Multipliers (Same as Actor)
             context_signal = results.get('contexts', None)
@@ -1633,9 +1444,8 @@ class PolicyGradient:
 
             # 3. Asymmetric Squared Error
             # Penalize underestimations by eta_plus, overestimations by eta_minus
-            # delta_squared = torch.where(delta > 0, eta_plus * (delta ** 2), eta_minus * (delta ** 2))
+            delta_squared = torch.where(delta > 0, eta_plus * (delta ** 2), eta_minus * (delta ** 2))
             
-            delta_squared = delta ** 2
             # Apply valid timestep mask
             delta_squared = delta_squared * M
             
@@ -1815,134 +1625,40 @@ class PolicyGradient:
 
         return advantage
 
-    def _get_task_phase(self, timestep):
-        """
-        Determine task phase from timestep.
-        Assumes gambling task structure: fixation (0-24), cue (25-49), decision (50+)
-        """
-        if timestep < 25:
-            return 'fixation'
-        elif timestep < 50:
-            return 'cue'
-        else:
-            return 'decision'
-
-    def _compute_rpe_signal(self, r_t, v_t, v_tm1, timestep=None, phase=None,
-                            dopamine_offset=0.0):
-        """
-        Compute continuous RPE signal for D1/D2 modulation.
-
-        RPE(t) = r(t) + γ*V(t) - V(t-1)
-
-        This is the TD error that can be used as a tonic dopamine signal.
-
-        Parameters
-        ----------
-        r_t : float or torch.Tensor
-            Reward at time t
-        v_t : torch.Tensor
-            Value estimate at time t
-        v_tm1 : torch.Tensor
-            Value estimate at time t-1
-        timestep : int, optional
-            Current timestep (for phase-specific optostimulation)
-        phase : str, optional
-            Current task phase ('fixation', 'cue', 'decision')
-
-        Returns
-        -------
-        rpe : torch.Tensor
-            RPE signal, optionally manipulated and clamped for D1/D2 modulation
-        """
-        # Compute natural TD error.
-        rpe = r_t + self.gamma * v_t - v_tm1
-
-        # Convert natural RPE to dopamine units.
-        rpe = rpe * self.rpe_modulation_gain
-
-        # Add training-time VTA context in dopamine units.
-        if not isinstance(dopamine_offset, torch.Tensor):
-            dopamine_offset = torch.tensor(dopamine_offset, device=self.device)
-        rpe = rpe + dopamine_offset
-
-        # Apply optogenetic stimulation in dopamine units (inference only).
-        if hasattr(self, 'opto_stim_offset') and hasattr(self, 'opto_stim_gain'):
-            opto_offset = self.opto_stim_offset
-            opto_gain = self.opto_stim_gain
-            opto_phase = getattr(self, 'opto_stim_phase', 'all')
-
-            # Check if stimulation should be applied to this phase
-            apply_opto = (opto_phase == 'all' or
-                         (phase is not None and opto_phase == phase))
-
-            if apply_opto and (opto_offset != 0.0 or opto_gain != 1.0):
-                # Apply optostimulation: RPE_opto = gain * RPE_DA + DA_offset
-                rpe = opto_gain * rpe + opto_offset
-
-        # Clamp final dopamine signal before D1/D2 gain modulation.
-        rpe = torch.clamp(rpe, -self.rpe_modulation_clamp, self.rpe_modulation_clamp)
-
-        return rpe
-
     def _apply_opponent_modulation(self, r, context_signal):
         """
         Intercepts network firing rates to apply D1/D2 multiplicative gain.
         Preserves Vanilla RL behavior if use_opponent_modulation is False.
-
-        When use_rpe_modulation is True, context_signal contains the continuous RPE.
-
-        BIOLOGICAL MECHANISM:
-        - Positive dopamine/RPE: increases D1 excitability and decreases D2 excitability
-        - Negative dopamine/RPE: decreases D1 excitability and increases D2 excitability
         """
-        # Enable modulation if either opponent_modulation or rpe_modulation is active
-        modulation_enabled = (self.config.get('use_opponent_modulation', False) or
-                             self.use_rpe_modulation)
-
-        if not modulation_enabled or context_signal is None:
+        if not self.config.get('use_opponent_modulation', False) or context_signal is None:
             return r
 
         if context_signal.dim() == 0:
             context_signal = context_signal.unsqueeze(0)
 
-        return self.policy_net._apply_dopamine_modulation(r, context_signal)
+        # 1. Biological bounded gains (Mechanism 1)
+        c_bounded = torch.clamp(context_signal, -1.0, 1.0) * 0.9
+        gain_D1 = 1.0 + c_bounded  # Dopamine boosts D1 (Optimism)
+        gain_D2 = 1.0 - c_bounded  # Dopamine suppresses D2 (Pessimism)
 
-    def _hill_occupancy(self, da, ec50, hill_n):
-        da = torch.clamp(da, min=1e-6)
-        ec50_t = torch.as_tensor(ec50, dtype=da.dtype, device=da.device).clamp_min(1e-6)
-        da_n = da ** hill_n
-        return da_n / (da_n + ec50_t ** hill_n)
+        # 2. Auto-reshape gains to broadcast over r's dimensions
+        if r.dim() == 3:      # (T, B, N) - Sequence
+            gain_D1 = gain_D1.view(1, -1, 1)
+            gain_D2 = gain_D2.view(1, -1, 1)
+        elif r.dim() == 2:    # (B, N) - Batch
+            gain_D1 = gain_D1.view(-1, 1)
+            gain_D2 = gain_D2.view(-1, 1)
+        elif r.dim() == 1:    # (N) - Single state
+            gain_D1 = gain_D1.view(1)
+            gain_D2 = gain_D2.view(1)
 
-    def _compute_learning_etas(self, context_signal, delta):
-        """Compute eta_plus/eta_minus for dopamine-biased policy learning."""
-        signal = torch.clamp(context_signal, -1.0, 1.0) * 0.9
+        # 3. Split hidden state into Opponent Pathways
+        half_N = r.shape[-1] // 2
+        r_D1_mod = r[..., :half_N] * gain_D1
+        r_D2_mod = r[..., half_N:] * gain_D2
 
-        if self.config.get('dopamine_learning_modulation_mode', 'linear') == 'hill':
-            base_da = float(self.config.get('dopamine_hill_base_da', 1.0))
-            da_range = float(self.config.get('dopamine_hill_da_range', 1.0))
-            hill_n = float(self.config.get('dopamine_hill_coefficient', 1.0))
-            scale = float(self.config.get('dopamine_hill_gain_scale', 2.0))
-
-            da = torch.clamp(base_da + da_range * signal, min=1e-4)
-            da0 = torch.as_tensor(base_da, dtype=signal.dtype, device=signal.device).clamp_min(1e-4)
-
-            occ_D1 = self._hill_occupancy(da, self.config.get('dopamine_hill_ec50_d1', 1.0), hill_n)
-            occ_D2 = self._hill_occupancy(da, self.config.get('dopamine_hill_ec50_d2', 0.07), hill_n)
-            occ0_D1 = self._hill_occupancy(da0, self.config.get('dopamine_hill_ec50_d1', 1.0), hill_n)
-            occ0_D2 = self._hill_occupancy(da0, self.config.get('dopamine_hill_ec50_d2', 0.07), hill_n)
-
-            eta_plus = 1.0 + scale * (occ_D1 - occ0_D1)
-            eta_minus = 1.0 - scale * (occ_D2 - occ0_D2)
-        else:
-            eta_plus = 1.0 + signal
-            eta_minus = 1.0 - signal
-
-        eta_min = float(self.config.get('dopamine_learning_eta_min', 0.1))
-        eta_max = float(self.config.get('dopamine_learning_eta_max', 1.9))
-        eta_plus = torch.clamp(eta_plus, eta_min, eta_max)
-        eta_minus = torch.clamp(eta_minus, eta_min, eta_max)
-
-        return eta_plus.unsqueeze(0).expand_as(delta), eta_minus.unsqueeze(0).expand_as(delta)
+        # 4. Recombine modulated state
+        return torch.cat([r_D1_mod, r_D2_mod], dim=-1)
 
     def _update_policy(self, results, optimizer, context_projection_optimizer=None):
             """Update policy network using context-modulated advantages (Mechanism 1)."""
@@ -1956,87 +1672,26 @@ class PolicyGradient:
             baseline_value = results["Z_b"]  # Shape: (T, B)
             
             with torch.no_grad():
-                if self.config.get('advantage_mode', 'mc') == 'mc':
-                    returns = self._compute_returns(R, self.gamma)
-                    delta = returns - baseline_value
-                elif self.config.get('advantage_mode') == 'gae':
-                    delta = self._compute_gae(
-                        R, baseline_value, M, self.gamma,
-                        lam=self.config.get('gae_lambda', 0.95)
-                    )
-                else:
-                    delta = self._compute_online_td_error(R, baseline_value, M, self.gamma)
+                returns = self._compute_returns(R, self.gamma)
+                
+            # 2. Compute standard, unbiased Advantage
+            delta = returns - baseline_value
 
-
-                # # Optional, much wider safety clamp. Default off.
-                # # The old ±1 clamp was destroying TD(0) signal because TD errors on
-                # # non-reward steps are small and informative — clipping them killed
-                # # the bootstrap chain. Rely on grad_clip instead.
-                # adv_clip = self.config.get('advantage_clip', None)
-                # if adv_clip is not None:
-                #     delta = torch.clamp(delta, -adv_clip, adv_clip)
-
-                # # Optional: normalize advantages (common in PPO/A2C, very stabilizing)
-                # if self.config.get('normalize_advantages', False):
-                #     valid = M.bool()
-                #     if valid.sum() > 1:
-                #         adv_mean = delta[valid].mean()
-                #         adv_std = delta[valid].std().clamp(min=1e-6)
-                #         delta = (delta - adv_mean) / adv_std
-                #         delta = delta * M  # re-mask after normalization
-
-                # δ_t^λ = G^λ_t - V(s_t)
-                # This is the TD(λ) advantage. Mechanistically: dopamine RPE
-                # integrated over an eligibility trace.
-                # lambda_returns = self._compute_lambda_returns(R, baseline_value, M, self.gamma,
-                #                                             lam=self.config.get('td_lambda', 0.99))
-                # delta = lambda_returns - baseline_value
-
-            # 3. Determine modulation signal for learning
-            # Use continuous RPE if RPE modulation is enabled, otherwise use external context
-            if self.use_rpe_modulation and 'RPE_continuous' in results:
-                # Use the actual timestep-specific RPE that drove behavior
-                # This ensures learning matches the D1/D2 modulation that occurred during behavior
-                rpe_continuous = results['RPE_continuous']  # Shape: (T, B)
-
-                # Store for use in firing rate modulation below
-                context_signal_timeseries = rpe_continuous  # (T, B)
-
-                # For eta_plus/eta_minus computation, use trial-averaged RPE
-                valid_steps = M.sum(dim=0).clamp(min=1.0)  # (B,)
-                context_signal = (rpe_continuous * M).sum(dim=0) / valid_steps  # (B,)
-
-                use_rpe_for_learning = True
-
-                # Diagnostic: Show RPE statistics periodically
-                if not hasattr(self, '_rpe_learning_update_count'):
-                    self._rpe_learning_update_count = 0
-
-                self._rpe_learning_update_count += 1
-
-                # Print on first update and every 100 updates
-                if self._rpe_learning_update_count == 1 or self._rpe_learning_update_count % 100 == 0:
-                    rpe_mean = context_signal.mean().item()
-                    rpe_std = context_signal.std().item()
-                    rpe_min = rpe_continuous.min().item()
-                    rpe_max = rpe_continuous.max().item()
-
-                    # Calculate D1/D2 modulation strength
-                    d1_boost = max(rpe_max, 0)
-                    d2_boost = max(-rpe_min, 0)
-
-                    print(f"\n[ PolicyGradient Update #{self._rpe_learning_update_count} ] RPE Learning Modulation")
-                    print(f"  Trial-averaged RPE: {rpe_mean:.4f} ± {rpe_std:.4f}")
-                    print(f"  RPE range: [{rpe_min:.4f}, {rpe_max:.4f}]")
-                    print(f"  Max D1 boost: {d1_boost:.1%}, Max D2 boost: {d2_boost:.1%}")
-            else:
-                # Use externally provided context (legacy mode)
-                context_signal = results.get('contexts', None)
-                context_signal_timeseries = None
-                use_rpe_for_learning = False
-
+            # 3. Apply Mechanism 1: Context dictates learning rate asymmetry
+            context_signal = results.get('contexts', None)
+            
             if context_signal is not None:
-                eta_plus, eta_minus = self._compute_learning_etas(context_signal, delta)
+                # Keep the asymmetry bounded so gradients never collapse to zero.
+                c_bounded = torch.clamp(context_signal, -1.0, 1.0) * 0.9
+
+                # High dopamine (positive context) -> eta_plus > eta_minus -> Risk Seeking
+                # Low dopamine (negative context) -> eta_plus < eta_minus -> Risk Averse
+                eta_plus = 1.0 + c_bounded
+                eta_minus = 1.0 - c_bounded
+                
+                # Expand to match delta shape: (T, B)
+                eta_plus = eta_plus.unsqueeze(0).expand_as(delta)
+                eta_minus = eta_minus.unsqueeze(0).expand_as(delta)
             else:
                 # Fallback to standard RL if no context is provided
                 eta_plus = torch.ones_like(delta)
@@ -2049,17 +1704,7 @@ class PolicyGradient:
             U_trimmed = U[:-1]
             B_size = U_trimmed.shape[1]
             x0 = self.policy_net.x0.unsqueeze(0).expand(B_size, -1)
-            recurrent_dopamine = None
-            if use_rpe_for_learning:
-                # Transition to state t+1 is driven by dopamine/RPE from t.
-                recurrent_dopamine = context_signal_timeseries[:-1]
-
-            _, states = self.policy_net(
-                U_trimmed,
-                Q_trimmed,
-                x0,
-                dopamine_signal=recurrent_dopamine
-            )
+            _, states = self.policy_net(U_trimmed, Q_trimmed, x0)
 
             # Apply Temperature
             if self.use_context_temperature and context_signal is not None:
@@ -2067,33 +1712,14 @@ class PolicyGradient:
             else:
                 temperature = None
 
-            # Modulate firing rates with the same RPE that drove behavior
             r_0 = self.policy_net.firing_rate(x0)
-            if use_rpe_for_learning:
-                # Use RPE at t=0 for initial state
-                rpe_0 = context_signal_timeseries[0]  # (B,)
-                r_0 = self._apply_opponent_modulation(r_0, rpe_0)
-            else:
-                r_0 = self._apply_opponent_modulation(r_0, context_signal)
+            r_0 = self._apply_opponent_modulation(r_0, context_signal)
             if self.policy_dropout is not None:
                 r_0 = self.policy_dropout(r_0)
             log_z_0 = self.policy_net.log_output(r_0, temperature=temperature)
 
             r_pred = self.policy_net.firing_rate(states)
-            if use_rpe_for_learning:
-                # Use timestep-specific RPE for each state
-                # states shape: (T-1, B, N), context_signal_timeseries: (T, B)
-                rpe_timeseries = context_signal_timeseries[1:]  # (T-1, B) - skip t=0
-                # Apply modulation timestep-by-timestep
-                r_pred_modulated = []
-                for t in range(r_pred.shape[0]):
-                    r_t = r_pred[t]  # (B, N)
-                    rpe_t = rpe_timeseries[t]  # (B,)
-                    r_t_mod = self._apply_opponent_modulation(r_t, rpe_t)
-                    r_pred_modulated.append(r_t_mod)
-                r_pred = torch.stack(r_pred_modulated, dim=0)  # (T-1, B, N)
-            else:
-                r_pred = self._apply_opponent_modulation(r_pred, context_signal)
+            r_pred = self._apply_opponent_modulation(r_pred, context_signal)
             if self.policy_dropout is not None:
                 r_pred = self.policy_dropout(r_pred)
             log_z_pred = self.policy_net.log_output(r_pred, temperature=temperature)
@@ -2126,154 +1752,3 @@ class PolicyGradient:
             optimizer.step()
             if context_projection_optimizer is not None:
                 context_projection_optimizer.step()
-
-
-    def _compute_gae(self, rewards, values, mask, gamma, lam=0.95):
-        """
-        Generalized Advantage Estimation (Schulman et al. 2016).
-
-        GAE_t = Σ_{l=0}^{∞} (γλ)^l * δ_{t+l}
-        where δ_t = r_t + γ V(s_{t+1}) - V(s_t)
-
-        λ=1.0  recovers Monte Carlo (high variance, no bias)
-        λ=0.0  recovers TD(0)        (low variance, high bias)
-        λ=0.95 is the PPO/A2C sweet spot for sparse-reward episodic tasks.
-
-        Parameters
-        ----------
-        rewards : (T, B)
-        values  : (T, B) or (T, B, n_quantiles) — distributional collapsed inside
-        mask    : (T, B) — 1 for valid timesteps, 0 after trial ends
-        gamma   : float
-        lam     : float in [0, 1]
-
-        Returns
-        -------
-        advantages : (T, B)
-        """
-        # Collapse distributional values to scalar baseline if needed
-        if len(values.shape) == 3:
-            if self.use_quantile_mean_for_ev:
-                values = compute_expected_value_from_quantiles(
-                    values, self.tau_values, method='mean'
-                )
-            else:
-                values = values[..., values.shape[-1] // 2]
-
-        T, B = rewards.shape
-        advantages = torch.zeros_like(rewards)
-        last_gae = torch.zeros(B, device=rewards.device)
-
-        for t in reversed(range(T)):
-            if t == T - 1:
-                # No bootstrap past the end of the buffer
-                next_value = torch.zeros(B, device=rewards.device)
-                next_nonterminal = torch.zeros(B, device=rewards.device)
-            else:
-                # mask[t+1] = 0 means trial ended, so next_value contributes nothing
-                next_value = values[t + 1]
-                next_nonterminal = mask[t + 1]
-
-            delta_t = rewards[t] + gamma * next_value * next_nonterminal - values[t]
-            last_gae = delta_t + gamma * lam * next_nonterminal * last_gae
-            advantages[t] = last_gae
-
-        # Mask out padding timesteps
-        advantages = advantages * mask
-        return advantages
-
-    def diagnose_critic(self, n_trials=200):
-        """
-        Quick diagnostic: does the critic's output range cover the return range?
-        Print this every checkfreq during training to catch a saturating/collapsing critic.
-
-        Returns a dict you can also log into your `items` display in train().
-        """
-        with torch.no_grad():
-            results = self.run_trials(n_trials, training=False)
-            R = results['R']
-            M = results['M']
-            Z_b = results['Z_b']
-
-            # Collapse distributional → scalar
-            if len(Z_b.shape) == 3:
-                if self.use_quantile_mean_for_ev:
-                    Z_b = compute_expected_value_from_quantiles(
-                        Z_b, self.tau_values, method='mean'
-                    )
-                else:
-                    Z_b = Z_b[..., Z_b.shape[-1] // 2]
-
-            returns = self._compute_returns(R, self.gamma)
-
-            # Only consider valid (non-padded) timesteps
-            valid = M.bool()
-            ret_valid = returns[valid]
-            v_valid = Z_b[valid]
-
-            # Per-trial terminal return (the actual reward each trial earned)
-            terminal_R = (R * M).sum(dim=0)  # (B,)
-
-            # Terminal-step V: V at the last valid timestep of each trial
-            # Find last valid index per trial
-            last_idx = M.sum(dim=0).long() - 1  # (B,)
-            last_idx = last_idx.clamp(min=0)
-            terminal_V = Z_b[last_idx, torch.arange(M.shape[1])]
-
-            diag = {
-                'V_min': v_valid.min().item(),
-                'V_max': v_valid.max().item(),
-                'V_mean': v_valid.mean().item(),
-                'V_std': v_valid.std().item(),
-                'Return_min': ret_valid.min().item(),
-                'Return_max': ret_valid.max().item(),
-                'Return_mean': ret_valid.mean().item(),
-                'Return_std': ret_valid.std().item(),
-                'Terminal_R_min': terminal_R.min().item(),
-                'Terminal_R_max': terminal_R.max().item(),
-                'Terminal_R_mean': terminal_R.mean().item(),
-                'Terminal_V_mean': terminal_V.mean().item(),
-                # Coverage ratio: does V's range cover the return range?
-                'V_range_coverage': (v_valid.max() - v_valid.min()).item() /
-                                    max((ret_valid.max() - ret_valid.min()).item(), 1e-6),
-                # Bias: is V systematically off from returns?
-                'V_minus_Return_bias': (v_valid - ret_valid).mean().item(),
-                # RMSE
-                'V_RMSE': torch.sqrt(((v_valid - ret_valid) ** 2).mean()).item(),
-            }
-            return diag
-        
-
-    def _compute_lambda_returns(self, rewards, values, mask, gamma, lam=0.9):
-        """
-        λ-return: the TD(λ) target.
-        
-        Biologically: this is what you get when each synapse keeps an
-        eligibility trace decaying at rate γλ, and the dopamine RPE
-        signal updates all eligible synapses. The offline λ-return is
-        mathematically equivalent to the forward view of TD(λ).
-        
-        G^λ_t = r_t + γ[(1-λ)V(s_{t+1}) + λ G^λ_{t+1}]
-        
-        λ=0.0 → TD(0) (synapses have no memory beyond one step)
-        λ=0.9 → eligibility decays over ~10 steps (biologically realistic;
-                matches Yagishita et al. 2014 ~2s synaptic tag window with dt=10ms)
-        λ=1.0 → Monte Carlo (synapses remember the entire episode)
-        """
-        T, B = rewards.shape
-        returns = torch.zeros_like(rewards)
-        last_return = torch.zeros(B, device=rewards.device)
-        
-        for t in reversed(range(T)):
-            if t == T - 1:
-                next_value = torch.zeros(B, device=rewards.device)
-                next_nonterminal = torch.zeros(B, device=rewards.device)
-            else:
-                next_value = values[t + 1]
-                next_nonterminal = mask[t + 1]
-            
-            bootstrap = (1 - lam) * next_value + lam * last_return
-            last_return = rewards[t] + gamma * next_nonterminal * bootstrap
-            returns[t] = last_return
-        
-        return returns

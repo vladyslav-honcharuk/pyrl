@@ -14,7 +14,8 @@ from pyrl import runtools, utils
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, LogNorm
+from matplotlib.lines import Line2D
 
 # Disable LaTeX rendering to avoid Unicode issues
 plt.rcParams['text.usetex'] = False
@@ -32,31 +33,34 @@ def to_numpy(x):
 
 
 def load_trial_data(trialsfile):
-    """
-    Load and unpack trial data into a consistent dict.
-
-    Returns dict with keys: trials, A, R, M, and optionally
-    Z_b, r_policy, r_value, RPE_objective, RPE_subjective.
-    Also includes 'format': 'behavior', 'activity', or 'rpe'.
-    """
+    """Load and unpack trial data into a consistent dict."""
     data = utils.load(trialsfile)
     result = {}
 
     if len(data) == 5:
         result['trials'], result['A'], result['R'], result['M'], _ = data
         result['format'] = 'behavior'
-    elif len(data) == 10:
-        (result['trials'], _, _, result['Z_b'], result['A'], result['R'],
-         result['M'], _, result['r_policy'], result['r_value']) = data
-        result['format'] = 'activity'
-    elif len(data) >= 12:
+    elif len(data) >= 10:
         (result['trials'], _, _, result['Z_b'], result['A'], result['R'],
          result['M'], _, result['r_policy'], result['r_value']) = data[:10]
-        result['RPE_objective'] = data[10]
-        result['RPE_subjective'] = data[11]
-        result['format'] = 'rpe'
-    else:
-        raise ValueError(f"Unexpected data format with {len(data)} elements")
+        result['r_policy_raw'] = result['r_policy']
+        result['format'] = 'activity'
+        
+        if len(data) >= 12:
+            result['RPE_objective'] = data[10]
+            result['RPE_subjective'] = data[11]
+            result['format'] = 'rpe'
+            
+        if len(data) >= 15:
+            result['Policy_Values'] = data[12]
+            result['Policy_D1_Pull'] = data[13]
+            result['Policy_D2_Pull'] = data[14]
+            result['format'] = 'subjective_values'
+
+        if len(data) >= 16:
+            result['r_policy_mod'] = data[15]
+            result['r_policy'] = result['r_policy_mod']
+            result['format'] = 'modulated_activity'
 
     return result
 
@@ -160,10 +164,24 @@ def regress_neurons(neural_data, delta_hh_lls, delta_evs, time_slice=slice(25, 5
     return np.array(beta_hh_ll), np.array(beta_ev)
 
 
-def compute_value_grid(trials, action_indices, Z_b_np):
-    """Compute 5×5 predicted value grid from chosen options."""
+def compute_value_grid(trials, action_indices, Z_b_np, context_val=None):
+    """Compute 5x5 predicted value grid from chosen options."""
     value_grid = np.zeros((5, 5))
     count_grid = np.zeros((5, 5))
+
+    if Z_b_np.ndim == 3:
+        if context_val is not None:
+            # Map context [-1.0, 1.0] to quantile index [0, 4]
+            # Risk averse (-1) -> lowest quantile, Risk seeking (+1) -> highest quantile
+            idx_exact = (context_val + 1.0) / 2.0 * (Z_b_np.shape[-1] - 1)
+            idx_low = int(np.floor(idx_exact))
+            idx_high = int(np.ceil(idx_exact))
+            weight = idx_exact - idx_low
+            
+            # Interpolate between the two nearest quantiles
+            Z_b_np = Z_b_np[..., idx_low] * (1 - weight) + Z_b_np[..., idx_high] * weight
+        else:
+            Z_b_np = np.mean(Z_b_np, axis=-1)
 
     for i, trial in enumerate(trials):
         trial_actions = action_indices[:, i]
@@ -179,6 +197,371 @@ def compute_value_grid(trials, action_indices, Z_b_np):
     return np.where(count_grid > 0, value_grid / count_grid, np.nan)
 
 
+def _format_ev_label(ev):
+    """Format EV labels from the actual trial values without image-specific scaling."""
+    if abs(ev) >= 10:
+        return f'{ev:g}'
+    return f'{ev:.2f}'.rstrip('0').rstrip('.')
+
+def compute_option_choice_frequency(trials, action_indices):
+    """
+    Compute relative preference within each EV group (probability weighting).
+
+    For each EV level, computes: P(choose option with probability p | both options have same EV)
+    This reveals how the agent weights different probabilities when EV is held constant.
+
+    Returns a dict mapping EV level to {probabilities, choice_proportions, counts}
+    where each entry has 5 points (one for each probability level at that EV).
+    """
+    from tasks.gambling import value_vector, REWARD_SCALE
+
+    probabilities = value_vector[:, 0]
+    magnitudes = value_vector[:, 1] / REWARD_SCALE
+    evs = probabilities * magnitudes
+
+    # For each option: count how many times it was chosen vs presented
+    # Structure: [col][row] = (times_chosen, times_presented)
+    option_chosen = {col: np.zeros(5) for col in range(5)}
+    option_presented = {col: np.zeros(5) for col in range(5)}
+
+    for i, trial in enumerate(trials):
+        trial_actions = action_indices[:, i]
+        choice_idx = np.where((trial_actions == 1) | (trial_actions == 2))[0]
+        if len(choice_idx) == 0:
+            continue
+
+        choice = trial_actions[choice_idx[0]]
+        chosen_target = trial['target_l'] if choice == 1 else trial['target_r']
+
+        target_l = trial['target_l']
+        target_r = trial['target_r']
+
+        # Extract position in grid for both options
+        col_l = target_l % 5
+        row_l = target_l // 5
+        col_r = target_r % 5
+        row_r = target_r // 5
+
+        # Count ALL trials (both within-EV and cross-EV)
+        # Both options were presented
+        option_presented[col_l][row_l] += 1
+        option_presented[col_r][row_r] += 1
+
+        # One option was chosen
+        col_chosen = chosen_target % 5
+        row_chosen = chosen_target // 5
+        option_chosen[col_chosen][row_chosen] += 1
+
+    # Compute choice rate: P(choose this option | it was presented)
+    results = {}
+    for col in range(5):
+        ev_level = round(evs[col], 2)  # EV is same for all in column
+        probs = []
+        choice_rates = []
+        counts_chosen = []
+        counts_presented = []
+
+        for row in range(5):
+            option_idx = col + 5 * row
+            probs.append(probabilities[option_idx] * 100)  # Convert to percentage
+
+            # Choice rate = times chosen / times presented
+            n_chosen = option_chosen[col][row]
+            n_presented = option_presented[col][row]
+
+            if n_presented > 0:
+                choice_rates.append(n_chosen / n_presented)
+            else:
+                choice_rates.append(0.0)
+
+            counts_chosen.append(n_chosen)
+            counts_presented.append(n_presented)
+
+
+        # Sort by probability
+        order = np.argsort(probs)
+        results[ev_level] = {
+            'probabilities': np.array(probs)[order],
+            'choice_proportions': np.array(choice_rates)[order],
+            'counts': np.array(counts_chosen)[order]
+        }
+
+    return results
+
+def generate_psychometric_trial_set(trials_per_comparison=20):
+    """
+    Generate trials designed for probability weighting curves.
+    Creates ALL pairwise comparisons (both within-EV and cross-EV) to allow
+    the agent to demonstrate both:
+    1. EV preference (higher EV chosen more often)
+    2. Probability weighting (within same EV, probability preferences)
+    """
+    trials = []
+
+    # Generate ALL possible pairs of the 25 options
+    for opt1 in range(25):
+        for opt2 in range(opt1 + 1, 25):  # Avoid duplicates and self-pairs
+            # Generate trials for this specific comparison
+            for _ in range(trials_per_comparison):
+                # Add both orderings (left-right and right-left)
+                trials.append({'target_l': opt1, 'target_r': opt2})
+                trials.append({'target_l': opt2, 'target_r': opt1})
+
+    return trials
+
+def plot_context_choice_probability_curves(contexts, trialsfiles, figspath, baseline_context=0.0):
+    """
+    Plot choice frequency vs probability for each of the 25 gambling options.
+    This reveals probability weighting curves showing how often each option is chosen.
+    """
+    os.makedirs(figspath, exist_ok=True)
+
+    # Compute choice frequencies for each context
+    choice_data = {}
+    for ctx in contexts:
+        td = load_trial_data(trialsfiles[ctx])
+        action_indices = convert_actions(td['A'])
+        choice_data[ctx] = compute_option_choice_frequency(td['trials'], action_indices)
+
+    if baseline_context not in choice_data:
+        baseline_context = min(contexts, key=lambda c: abs(c))
+
+    # Get all EV levels
+    unique_evs = sorted(choice_data[baseline_context].keys())
+    if len(unique_evs) == 0:
+        raise SystemExit("No choice data found. Check trial files.")
+
+    # Color maps
+    grey_colors = plt.cm.Greys(np.linspace(0.85, 0.35, len(unique_evs)))
+    red_colors = plt.cm.Reds(np.linspace(0.45, 0.85, len(unique_evs)))
+
+    comparison_contexts = [ctx for ctx in contexts if ctx != baseline_context]
+
+    for ctx in comparison_contexts:
+        if ctx not in choice_data:
+            continue
+
+        fig, ax = plt.subplots(figsize=(10.8, 6.0))
+        fig.subplots_adjust(left=0.08, right=0.67, bottom=0.12, top=0.88)
+
+        baseline_handles = []
+        context_handles = []
+
+        # Plot each EV group (5 points per group)
+        for ev_idx, ev_level in enumerate(unique_evs):
+            if ev_level not in choice_data[baseline_context]:
+                continue
+            if ev_level not in choice_data[ctx]:
+                continue
+
+            # Get baseline data
+            base_data = choice_data[baseline_context][ev_level]
+            probs_base = base_data['probabilities']
+            props_base = base_data['choice_proportions']
+
+            # Get context data
+            ctx_data = choice_data[ctx][ev_level]
+            probs_ctx = ctx_data['probabilities']
+            props_ctx = ctx_data['choice_proportions']
+
+            # Connect dots with straight lines
+            if len(probs_base) >= 2:
+                from scipy.interpolate import interp1d
+                # Use linear interpolation to connect dots
+                f_base = interp1d(probs_base, props_base, kind='linear',
+                                 bounds_error=False, fill_value='extrapolate')
+                f_ctx = interp1d(probs_ctx, props_ctx, kind='linear',
+                                bounds_error=False, fill_value='extrapolate')
+                
+                x_smooth = np.linspace(probs_base.min(), probs_base.max(), 100)
+
+                # Clip to valid range [0, 1]
+                y_base_smooth = np.clip(f_base(x_smooth), 0, 1)
+                y_ctx_smooth = np.clip(f_ctx(x_smooth), 0, 1)
+
+                # Plot smooth fitted curves
+                ax.plot(x_smooth, y_base_smooth, '-', color=grey_colors[ev_idx],
+                       linewidth=2.2, alpha=0.8, zorder=2)
+                ax.plot(x_smooth, y_ctx_smooth, '-', color=red_colors[ev_idx],
+                       linewidth=2.2, alpha=0.8, zorder=2)
+
+            # Plot data points on top
+            ax.plot(probs_base, props_base, 'o', color=grey_colors[ev_idx],
+                   markerfacecolor='white', markeredgewidth=1.8, markersize=7,
+                   zorder=4, clip_on=False)
+            ax.plot(probs_ctx, props_ctx, 'o', color=red_colors[ev_idx],
+                   markerfacecolor=red_colors[ev_idx], markeredgecolor=red_colors[ev_idx],
+                   markersize=7, zorder=5, clip_on=False)
+
+            # Create legend handles
+            ev_label = f'EV {_format_ev_label(ev_level)}'
+            baseline_handles.append(Line2D([0], [0], color=grey_colors[ev_idx],
+                                          marker='o', markerfacecolor='white',
+                                          markeredgewidth=1.8, linewidth=2.2,
+                                          label=ev_label))
+            context_handles.append(Line2D([0], [0], color=red_colors[ev_idx],
+                                         marker='o', markerfacecolor=red_colors[ev_idx],
+                                         markeredgecolor=red_colors[ev_idx],
+                                         linewidth=2.2, label=ev_label))
+
+        # Formatting
+        title = f'Probability weighting curve: c={ctx:+.2f} vs c={baseline_context:+.2f}'
+        ax.set_title(title, fontsize=15, pad=12)
+        ax.set_xlabel('Probability (%)', fontsize=14)
+        ax.set_ylabel('Proportion chosen', fontsize=14)
+        ax.set_xlim(0, 100)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_xticks([10, 30, 50, 70, 90])
+        ax.set_yticks([0, 0.5, 1.0])
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.tick_params(labelsize=12)
+
+        handles = baseline_handles + context_handles
+        labels = [h.get_label() for h in handles]
+        ax.legend(handles, labels, ncol=2, fontsize=8.5, frameon=False,
+                 title=f'c={baseline_context:+.2f}                  c={ctx:+.2f}',
+                 title_fontsize=10,
+                 loc='center left', bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0)
+
+        ctx_str = format_context_str(ctx)
+        outfile = os.path.join(figspath, f'context_choice_probability_curves_ctx{ctx_str}.png')
+        fig.savefig(outfile, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Saved probability weighting curve: {outfile}")
+
+
+def plot_context_choice_probability_mega(contexts, trialsfiles, figspath, baseline_context=0.0):
+    """
+    Create a compact 2-row mega plot of probability weighting curves.
+    """
+    os.makedirs(figspath, exist_ok=True)
+
+    choice_data = {}
+    for ctx in contexts:
+        td = load_trial_data(trialsfiles[ctx])
+        action_indices = convert_actions(td['A'])
+        choice_data[ctx] = compute_option_choice_frequency(td['trials'], action_indices)
+
+    if baseline_context not in choice_data:
+        baseline_context = min(contexts, key=lambda c: abs(c))
+
+    unique_evs = sorted(choice_data[baseline_context].keys())
+    if len(unique_evs) == 0:
+        raise SystemExit("No choice data found. Check trial files.")
+
+    negative_contexts = sorted([ctx for ctx in contexts if ctx < baseline_context])
+    positive_contexts = sorted([ctx for ctx in contexts if ctx > baseline_context])
+    n_cols = max(len(negative_contexts), len(positive_contexts))
+
+    grey_colors = plt.cm.Greys(np.linspace(0.78, 0.35, len(unique_evs)))
+    red_colors = plt.cm.Reds(np.linspace(0.45, 0.85, len(unique_evs)))
+
+    fig, axes = plt.subplots(2, n_cols, figsize=(2.35 * n_cols, 5.2),
+                             sharex=True, sharey=True)
+    if n_cols == 1:
+        axes = np.array([[axes[0]], [axes[1]]])
+
+    def draw_panel(ax, ctx):
+        if ctx not in choice_data:
+            return
+
+        for ev_idx, ev_level in enumerate(unique_evs):
+            if ev_level not in choice_data[baseline_context]:
+                continue
+            if ev_level not in choice_data[ctx]:
+                continue
+
+            base_data = choice_data[baseline_context][ev_level]
+            ctx_data = choice_data[ctx][ev_level]
+
+            base_probs = base_data['probabilities']
+            base_props = base_data['choice_proportions']
+            ctx_probs = ctx_data['probabilities']
+            ctx_props = ctx_data['choice_proportions']
+
+            # Connect dots with straight lines
+            if len(base_probs) >= 2:
+                from scipy.interpolate import interp1d
+                f_base = interp1d(base_probs, base_props, kind='linear',
+                                 bounds_error=False, fill_value='extrapolate')
+                f_ctx = interp1d(ctx_probs, ctx_props, kind='linear',
+                                bounds_error=False, fill_value='extrapolate')
+                
+                x_smooth = np.linspace(base_probs.min(), base_probs.max(), 100)
+
+                y_base_smooth = np.clip(f_base(x_smooth), 0, 1)
+                y_ctx_smooth = np.clip(f_ctx(x_smooth), 0, 1)
+
+                # Plot smooth curves
+                ax.plot(x_smooth, y_base_smooth, '-', color=grey_colors[ev_idx],
+                        linewidth=1.1, alpha=0.55, zorder=1)
+                ax.plot(x_smooth, y_ctx_smooth, '-', color=red_colors[ev_idx],
+                        linewidth=1.5, alpha=0.9, zorder=2)
+
+            # Plot data points
+            ax.plot(base_probs, base_props, 'o', color=grey_colors[ev_idx],
+                    markerfacecolor='white', markeredgewidth=0.9,
+                    markersize=3.2, zorder=3, clip_on=False)
+            ax.plot(ctx_probs, ctx_props, 'o', color=red_colors[ev_idx],
+                    markerfacecolor=red_colors[ev_idx],
+                    markeredgecolor=red_colors[ev_idx],
+                    markersize=3.2, zorder=4, clip_on=False)
+
+        ax.set_title(f'c={ctx:+.1f}', fontsize=10, pad=4)
+        ax.set_xlim(0, 100)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_xticks([10, 50, 90])
+        ax.set_yticks([0, 0.5, 1.0])
+        ax.tick_params(labelsize=8)
+        ax.spines[['top', 'right']].set_visible(False)
+
+    for col, ctx in enumerate(negative_contexts):
+        draw_panel(axes[0, col], ctx)
+    for col, ctx in enumerate(positive_contexts):
+        draw_panel(axes[1, col], ctx)
+
+    for col in range(len(negative_contexts), n_cols):
+        axes[0, col].axis('off')
+    for col in range(len(positive_contexts), n_cols):
+        axes[1, col].axis('off')
+
+    axes[0, 0].set_ylabel('Negative c\nProportion chosen', fontsize=10)
+    axes[1, 0].set_ylabel('Positive c\nProportion chosen', fontsize=10)
+    for ax in axes[1, :]:
+        ax.set_xlabel('Probability (%)', fontsize=9)
+
+    # Create legend handles for baseline (grey) and context (red) for each EV
+    baseline_handles = [
+        Line2D([0], [0], color=grey_colors[i], marker='o', markerfacecolor='white',
+               markeredgewidth=1.2, linewidth=1.5, label=f'EV {_format_ev_label(ev)}')
+        for i, ev in enumerate(unique_evs)
+    ]
+    context_handles = [
+        Line2D([0], [0], color=red_colors[i], marker='o',
+               markerfacecolor=red_colors[i], markeredgecolor=red_colors[i],
+               linewidth=1.5, label=f'EV {_format_ev_label(ev)}')
+        for i, ev in enumerate(unique_evs)
+    ]
+
+    # Combine handles and create custom labels with two columns
+    all_handles = baseline_handles + context_handles
+
+    # Place legend outside the plot area on the right, close to plots
+    fig.legend(handles=all_handles, loc='center left',
+               frameon=False, bbox_to_anchor=(0.92, 0.5),
+               fontsize=9, ncol=2, columnspacing=1.5, handlelength=2.0,
+               title=f'c={baseline_context:+.1f}                  c=dopamine',
+               title_fontsize=10)
+
+    fig.suptitle('Probability Weighting Curves Across Context', fontsize=16, y=0.98)
+    fig.tight_layout(rect=[0, 0, 0.92, 0.96])
+
+    outfile = os.path.join(figspath, 'context_choice_probability_curves_mega.png')
+    fig.savefig(outfile, dpi=220, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved probability weighting mega plot: {outfile}")
+
+
 def load_model_weights(modelfile):
     """Load output weights from a model file. Returns (Wout_policy, Wout_value)."""
     model_data = utils.load(modelfile)
@@ -186,7 +569,12 @@ def load_model_weights(modelfile):
     baseline_params = model_data.get('best_baseline_params', {})
 
     Wout_policy = to_numpy(policy_params.get('Wout', None))
-    Wout_value = to_numpy(baseline_params.get('Wout', None))
+
+    # For MLP critic, use Wout2 (final layer) if available, otherwise fall back to Wout
+    if 'Wout2' in baseline_params:
+        Wout_value = to_numpy(baseline_params.get('Wout2', None))
+    else:
+        Wout_value = to_numpy(baseline_params.get('Wout', None))
 
     return Wout_policy, Wout_value
 
@@ -194,6 +582,27 @@ def load_model_weights(modelfile):
 def format_kappa_str(kappa):
     """Format kappa value to a filename-safe string."""
     return f"{kappa:+.1f}".replace('.', 'p').replace('-', 'neg').replace('+', 'pos')
+
+
+def format_context_str(ctx):
+    """Format context value to a filename-safe string, normalizing -0.0 to +0.0."""
+    if abs(ctx) < 1e-12:
+        ctx = 0.0
+    return f"{ctx:+.2f}".replace('.', 'p').replace('-', 'neg').replace('+', 'pos')
+
+
+def dense_context_values():
+    """Dense context sweep from -1.0 to +1.0 in 0.1 steps."""
+    return [0.0 if i == 0 else round(i / 10, 1) for i in range(-10, 11)]
+
+
+def context_values_step(step=0.2):
+    """Context sweep from -1.0 to +1.0 with a configurable step."""
+    n_steps = int(round(2.0 / step))
+    return [
+        0.0 if abs(-1.0 + i * step) < 1e-9 else round(-1.0 + i * step, 2)
+        for i in range(n_steps + 1)
+    ]
 
 
 def compute_theoretical_evs():
@@ -208,19 +617,33 @@ def compute_theoretical_evs():
 
 
 def create_extended_value_colormap():
-    """Custom colormap with viridis core and extended range for outlier values."""
+    """Custom colormap with viridis core (0.39-1.01) and log-scaled extensions."""
     viridis = plt.cm.viridis
 
-    colors = [
-        '#000000', '#1f1f1f',
-        viridis(0.0), viridis(0.5), viridis(1.0),
-        '#ff8c00', '#ff0000',
-    ]
-    positions = [0.0, 0.035, 0.035, 0.07, 0.105, 0.55, 1.0]
+    # Map viridis to numeric interval [0.39, 1.01]; sample a few points
+    vf = [0.0, 0.25, 0.5, 0.75, 1.0]
+    viridis_colors = [viridis(f) for f in vf]
+    viridis_positions_data = [0.39 + f * (1.01 - 0.39) for f in vf]  # -> [0.39, 0.545, 0.7, 0.855, 1.01]
 
-    return LinearSegmentedColormap.from_list(
-        'value_extended', list(zip(positions, colors))
-    )
+    # Convert to log-normalized positions for the colormap
+    # LogNorm maps [vmin=0.01, vmax=10.0] to [0, 1] via log scale
+    vmin_data = 0.01
+    vmax_data = 10.0
+    log_vmin = np.log(vmin_data)
+    log_vmax = np.log(vmax_data)
+    
+    viridis_positions_log = [(np.log(p) - log_vmin) / (log_vmax - log_vmin) for p in viridis_positions_data]
+    
+    # Compute log-normalized positions for boundary colors
+    pos_0_01_log = (np.log(0.01) - log_vmin) / (log_vmax - log_vmin)  # = 0.0
+    pos_0_2_log = (np.log(0.2) - log_vmin) / (log_vmax - log_vmin)
+    pos_5_log = (np.log(5.0) - log_vmin) / (log_vmax - log_vmin)
+    pos_10_log = 1.0
+    
+    positions = [pos_0_01_log, pos_0_2_log] + viridis_positions_log + [pos_5_log, pos_10_log]
+    colors = ['#0b1e4d', '#1f3b7a'] + viridis_colors + ['#ff8c00', '#ff0000']
+
+    return LinearSegmentedColormap.from_list('value_extended', list(zip(positions, colors)))
 
 TEAL_BROWN_CMAP = LinearSegmentedColormap.from_list(
     'teal_brown', ['#008080', '#40E0D0', '#FFD700', '#FF8C00', '#8B4513']
@@ -270,16 +693,63 @@ def _load_comparison_data(keys, trialsfiles, modelfiles):
         beta_hh_ll_policy, beta_ev_policy = regress_neurons(r_policy_np, delta_hh_lls, delta_evs)
         beta_hh_ll_value, beta_ev_value = regress_neurons(r_value_np, delta_hh_lls, delta_evs)
 
+        half_N = r_policy_np.shape[2] // 2
+        r_policy_d1 = r_policy_np[:, :, :half_N]
+        r_policy_d2 = r_policy_np[:, :, half_N:]
+        beta_hh_ll_policy_d1, beta_ev_policy_d1 = regress_neurons(
+            r_policy_d1, delta_hh_lls, delta_evs
+        )
+        beta_hh_ll_policy_d2, beta_ev_policy_d2 = regress_neurons(
+            r_policy_d2, delta_hh_lls, delta_evs
+        )
+
+        Wout_policy_d1 = None
+        Wout_policy_d2 = None
+        if Wout_policy is not None and Wout_policy.ndim >= 1:
+            Wout_policy_d1 = Wout_policy[:half_N]
+            Wout_policy_d2 = Wout_policy[half_N:]
+
         ch = extract_choices(td['trials'], action_indices, delta_hh_lls, delta_evs)
 
-        value_grid = compute_value_grid(td['trials'], action_indices, Z_b_np)
+        ctx_val = key if isinstance(key, float) else None
+        value_grid = compute_value_grid(td['trials'], action_indices, Z_b_np, context_val=ctx_val)
+
+        # --- NEW: Compute Policy Value Grids ---
+        grid_V, grid_D1, grid_D2 = None, None, None
+        pull_stats = None
+        if 'Policy_Values' in td:
+            grid_V, grid_D1, grid_D2 = compute_policy_value_grids(
+                td['trials'], td['Policy_Values'], td['Policy_D1_Pull'], td['Policy_D2_Pull'], td['M']
+            )
+            d1_pull = to_numpy(td['Policy_D1_Pull'])
+            d2_pull = to_numpy(td['Policy_D2_Pull'])
+            mask = to_numpy(td['M']).astype(bool)
+            if np.any(mask):
+                d1_valid = d1_pull[mask]
+                d2_valid = d2_pull[mask]
+                pull_stats = {
+                    'd1_abs_mean': float(np.mean(np.abs(d1_valid))),
+                    'd2_abs_mean': float(np.mean(np.abs(d2_valid))),
+                    'd1_std': float(np.std(d1_valid)),
+                    'd2_std': float(np.std(d2_valid)),
+                    'd1_choice_abs_mean': float(np.mean(np.abs(d1_valid[:, 1:3]))),
+                    'd2_choice_abs_mean': float(np.mean(np.abs(d2_valid[:, 1:3]))),
+                }
+        # ---------------------------------------
 
         all_data[key] = {
             'choices': ch['choices'], 'delta_hh_lls': ch['delta_hh_lls'],
             'delta_evs': ch['delta_evs'], 'value_grid': value_grid,
             'beta_hh_ll_policy': beta_hh_ll_policy, 'beta_ev_policy': beta_ev_policy,
             'beta_hh_ll_value': beta_hh_ll_value, 'beta_ev_value': beta_ev_value,
-            'Wout_policy': Wout_policy, 'Wout_value': Wout_value
+            'beta_hh_ll_policy_d1': beta_hh_ll_policy_d1, 'beta_ev_policy_d1': beta_ev_policy_d1,
+            'beta_hh_ll_policy_d2': beta_hh_ll_policy_d2, 'beta_ev_policy_d2': beta_ev_policy_d2,
+            'Wout_policy': Wout_policy, 'Wout_value': Wout_value,
+            'Wout_policy_d1': Wout_policy_d1, 'Wout_policy_d2': Wout_policy_d2,
+            
+            # --- NEW: Add them to the dictionary ---
+            'grid_V': grid_V, 'grid_D1': grid_D1, 'grid_D2': grid_D2,
+            'pull_stats': pull_stats
         }
 
     baseline_data = all_data.get(baseline_key)
@@ -344,18 +814,21 @@ def _plot_row_behavior(fig, gs, row, col_keys, all_data, get_title):
 
 
 def _plot_row_values(fig, gs, row, col_keys, all_data):
-    """Plot Row: Predicted value heatmaps."""
+    """Plot Row: Predicted value heatmaps (log-scaled)."""
     axes = []
     im = None
     value_cmap = create_extended_value_colormap()
+    norm = LogNorm(vmin=0.01, vmax=10.0)
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
         axes.append(ax)
         if key not in all_data:
             ax.set_xticks([]); ax.set_yticks([])
             continue
-        im = ax.imshow(all_data[key]['value_grid'].T, cmap=value_cmap,
-                       aspect='auto', origin='lower', vmin=0.0, vmax=10.0)
+        # Clip negative/zero values to vmin and apply log normalization
+        data = np.clip(all_data[key]['value_grid'], 0.01, None)
+        im = ax.imshow(data.T, cmap=value_cmap, norm=norm,
+                       aspect='auto', origin='lower')
         prob_labels = ['10', '30', '50', '70', '90']
         ax.set_yticks(range(5)); ax.set_xticks(range(5))
         ax.set_yticklabels(prob_labels, fontsize=8)
@@ -368,10 +841,10 @@ def _plot_row_values(fig, gs, row, col_keys, all_data):
         cbar = plt.colorbar(im, cax=cax)
         cbar.set_label('Predicted\nValue', fontsize=9, rotation=270, labelpad=15)
         cbar.ax.tick_params(labelsize=8)
-        cbar.set_ticks([0.0, 0.4, 1.0, 5.0, 10.0])
-        cbar.set_ticklabels(['0.0', '0.4', '1.0', '5.0', '10.0'])
+        # Ticks in data coordinates; LogNorm handles the scaling
+        cbar.set_ticks([0.01, 0.39, 1.01, 5.0, 10.0])
+        cbar.set_ticklabels(['0.01', '0.39', '1.01', '5.0', '10.0'])
     return axes
-
 
 def _plot_row_regression(fig, gs, row, col_keys, all_data, network, ylabel):
     """Plot Row: Regression scatter (β_HH-LL vs β_EV)."""
@@ -405,9 +878,47 @@ def _plot_row_regression(fig, gs, row, col_keys, all_data, network, ylabel):
         cbar.set_label('Neuron\n(sorted by βEV)', fontsize=9, rotation=270, labelpad=15)
         cbar.ax.tick_params(labelsize=8)
         n = len(all_data[col_keys[-1] if col_keys[-1] in all_data else
-                         next(k for k in reversed(col_keys) if k in all_data)][beta_key_ev])
-        cbar.set_ticks([0, (n-1)/2, n-1])
-        cbar.set_ticklabels(['1', '50', '100'])
+                 next(k for k in reversed(col_keys) if k in all_data)][beta_key_ev])
+        mid = (n + 1) // 2
+        cbar.set_ticks([0, (n - 1) / 2, n - 1])
+        cbar.set_ticklabels(['1', str(mid), str(n)])
+    return axes
+
+
+def _plot_row_regression_keys(fig, gs, row, col_keys, all_data, beta_key_hh, beta_key_ev, ylabel):
+    """Plot Row: Regression scatter using explicit beta keys."""
+    axes = []
+    sc = None
+    for idx, key in enumerate(col_keys):
+        ax = fig.add_subplot(gs[row, idx])
+        axes.append(ax)
+        if key not in all_data:
+            continue
+        beta_hh = all_data[key][beta_key_hh]
+        beta_ev = all_data[key][beta_key_ev]
+        sort_idx = np.argsort(beta_ev)
+        neuron_colors = np.zeros(len(beta_ev))
+        neuron_colors[sort_idx] = np.arange(len(beta_ev))
+        sc = ax.scatter(beta_hh, beta_ev, c=neuron_colors, cmap=TEAL_BROWN_CMAP,
+                        s=20, alpha=0.6, edgecolors='none', vmin=0, vmax=len(beta_ev)-1)
+        ax.axhline(0, color='black', linestyle=':', alpha=0.4, linewidth=0.8)
+        ax.axvline(0, color='black', linestyle=':', alpha=0.4, linewidth=0.8)
+        ax.set_xlim([-0.5, 0.5]); ax.set_ylim([-0.8, 0.8])
+        ax.set_xticks([-0.4, 0, 0.4]); ax.set_yticks([-0.6, 0, 0.6])
+        ax.tick_params(labelsize=8)
+        if idx == 0:
+            ax.set_ylabel(ylabel, fontsize=10); ax.set_xlabel('βHH-LL', fontsize=9)
+    if sc is not None:
+        pos = axes[-1].get_position()
+        cax = fig.add_axes([pos.x1 + 0.01, pos.y0, 0.01, pos.height])
+        cbar = plt.colorbar(sc, cax=cax)
+        cbar.set_label('Neuron\n(sorted by βEV)', fontsize=9, rotation=270, labelpad=15)
+        cbar.ax.tick_params(labelsize=8)
+        n = len(all_data[col_keys[-1] if col_keys[-1] in all_data else
+                 next(k for k in reversed(col_keys) if k in all_data)][beta_key_ev])
+        mid = (n + 1) // 2
+        cbar.set_ticks([0, (n - 1) / 2, n - 1])
+        cbar.set_ticklabels(['1', str(mid), str(n)])
     return axes
 
 
@@ -422,6 +933,12 @@ def _plot_row_weights(fig, gs, row, col_keys, all_data, baseline_data,
             continue
         w = all_data[key].get(wkey)
         if baseline_w is not None and w is not None:
+            # Check if shapes match (linear vs MLP baseline)
+            if baseline_w.size != w.size:
+                ax.text(0.5, 0.5, 'Shape\nMismatch', ha='center', va='center',
+                       transform=ax.transAxes, fontsize=10, color='gray')
+                ax.set_xlim([-lim, lim]); ax.set_ylim([-lim, lim])
+                continue
             ax.scatter(baseline_w.flatten(), w.flatten(), s=15, alpha=0.5, color=color)
             ax.plot([-lim, lim], [-lim, lim], 'k--', alpha=0.3, linewidth=1)
             ax.set_xlim([-lim, lim]); ax.set_ylim([-lim, lim]); ax.set_aspect('equal')
@@ -463,6 +980,32 @@ def _plot_row_beta_vs_weights(fig, gs, row, col_keys, all_data, network, color, 
         ax.set_yticklabels([fmt(t) for t in [-wlim, 0, wlim]])
         if idx == 0:
             ax.set_ylabel(f'{network.capitalize()}\nOutput Weight', fontsize=10)
+            ax.set_xlabel('βHH-LL', fontsize=9)
+
+
+def _plot_row_beta_vs_weights_keys(fig, gs, row, col_keys, all_data, wkey, beta_key, color, wlim, ylabel):
+    """Plot Row: β_HH-LL vs output weights using explicit keys."""
+    for idx, key in enumerate(col_keys):
+        ax = fig.add_subplot(gs[row, idx])
+        if key not in all_data:
+            continue
+        betas = all_data[key][beta_key]
+        w = all_data[key].get(wkey)
+        if w is None:
+            continue
+        n_outputs = w.shape[1] if w.ndim > 1 else 1
+        x_data = np.repeat(betas, n_outputs) if n_outputs > 1 else betas
+        y_data = w.flatten()
+        ax.scatter(x_data, y_data, s=15, alpha=0.5, color=color)
+        ax.set_xlim([-0.5, 0.5]); ax.set_ylim([-wlim, wlim])
+        ax.set_xticks([-0.4, 0, 0.4])
+        ax.set_yticks([-wlim, 0, wlim])
+        ax.tick_params(labelsize=8)
+        fmt = lambda t: f'{t:.3f}' if abs(t) < 0.1 else f'{t:.2f}' if abs(t) < 1 else f'{t:.1f}'
+        ax.set_xticklabels([f'{t:.1f}' for t in [-0.4, 0, 0.4]])
+        ax.set_yticklabels([fmt(t) for t in [-wlim, 0, wlim]])
+        if idx == 0:
+            ax.set_ylabel(ylabel, fontsize=10)
             ax.set_xlabel('βHH-LL', fontsize=9)
 
 # ============================================================
@@ -855,6 +1398,186 @@ def plot_regression_analysis(trialsfile, figspath):
     }
 
 
+def compute_policy_value_grids(trials, Policy_Values, Policy_D1_Pull, Policy_D2_Pull, M):
+    """
+    Maps the Left (index 1) and Right (index 2) logits back to the 
+    specific 25 gambling options presented in the trials.
+    Extracts the values exactly at the timestep the decision was made.
+    
+    AXES SWAPPED: 
+    Y-axis (Rows) = Expected Value (EV)
+    X-axis (Cols) = Probability
+    """
+    grid_V = np.zeros((5, 5))
+    grid_D1 = np.zeros((5, 5))
+    grid_D2 = np.zeros((5, 5))
+    counts = np.zeros((5, 5))
+
+    Policy_Values_np = to_numpy(Policy_Values)
+    Policy_D1_Pull_np = to_numpy(Policy_D1_Pull)
+    Policy_D2_Pull_np = to_numpy(Policy_D2_Pull)
+    M_np = to_numpy(M)
+
+    for i, trial in enumerate(trials):
+        target_l = trial['target_l']
+        target_r = trial['target_r']
+
+        t_choice = int(np.sum(M_np[:, i])) - 1
+        if t_choice < 0:
+            continue
+
+        # --- SWAPPED AXES ASSIGNMENT ---
+        # target // 5 gives Probability (0 to 4) -> Column (X)
+        # target % 5 gives EV Magnitude (0 to 4) -> Row (Y)
+        row_l, col_l = target_l % 5, target_l // 5
+        row_r, col_r = target_r % 5, target_r // 5
+
+        grid_V[row_l, col_l] += Policy_Values_np[t_choice, i, 1]
+        grid_D1[row_l, col_l] += Policy_D1_Pull_np[t_choice, i, 1]
+        grid_D2[row_l, col_l] += Policy_D2_Pull_np[t_choice, i, 1]
+        counts[row_l, col_l] += 1
+
+        grid_V[row_r, col_r] += Policy_Values_np[t_choice, i, 2]
+        grid_D1[row_r, col_r] += Policy_D1_Pull_np[t_choice, i, 2]
+        grid_D2[row_r, col_r] += Policy_D2_Pull_np[t_choice, i, 2]
+        counts[row_r, col_r] += 1
+
+    with np.errstate(invalid='ignore'):
+        grid_V = np.divide(grid_V, counts, out=np.full_like(grid_V, np.nan), where=counts!=0)
+        grid_D1 = np.divide(grid_D1, counts, out=np.full_like(grid_D1, np.nan), where=counts!=0)
+        grid_D2 = np.divide(grid_D2, counts, out=np.full_like(grid_D2, np.nan), where=counts!=0)
+
+    return grid_V, grid_D1, grid_D2
+
+
+def plot_policy_subjective_values(trialsfile, figspath, context_val=None):
+    """
+    Plots a 1x3 figure showing the D1 Pull, D2 Pull, and Total Subjective Value (V)
+    that the Policy network assigns to the 25 gambling options.
+    """
+    td = load_trial_data(trialsfile)
+    
+    if 'Policy_Values' not in td:
+        return
+
+    grid_V, grid_D1, grid_D2 = compute_policy_value_grids(
+        td['trials'], td['Policy_Values'], td['Policy_D1_Pull'], td['Policy_D2_Pull'], td['M']
+    )
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    titles = ['D1 (Go) Pull', 'D2 (NoGo) Pull', 'Total Subjective Value ($V=P-N$)']
+    grids = [grid_D1, grid_D2, grid_V]
+    
+    max_val = np.nanmax(np.abs([grid_D1, grid_D2, grid_V]))
+    
+    for i, ax in enumerate(axes):
+        im = ax.imshow(grids[i], cmap='RdBu', origin='lower', vmin=-max_val, vmax=max_val, aspect='auto')
+        
+        ax.set_title(titles[i], fontsize=14, weight='bold')
+        
+        # --- SWAPPED LABELS ---
+        ax.set_ylabel('Expected Value (EV)', fontsize=12)
+        ax.set_xlabel('Reward Probability', fontsize=12)
+        
+        ax.set_yticks(range(5))
+        ax.set_yticklabels(['0.4', '', '0.7', '', '1.0'])
+        ax.set_xticks(range(5))
+        ax.set_xticklabels(['10%', '30%', '50%', '70%', '90%'])
+        
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label('Logits (Preference)', rotation=270, labelpad=15)
+
+    title_suffix = f" (Context = {context_val:+.2f})" if context_val is not None else ""
+    plt.suptitle(f"Policy Network Internal Value Representation{title_suffix}", fontsize=18, y=1.05)
+    plt.tight_layout()
+
+    ctx_str = f"_ctx{context_val:+.2f}".replace('.', 'p').replace('-', 'neg').replace('+', 'pos') if context_val is not None else ""
+    savefile = os.path.join(figspath, f'policy_subjective_values{ctx_str}.png')
+    plt.savefig(savefile, dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_mega_policy_subjective_values(contexts, trialsfiles, figspath):
+    """
+    Creates a 3x9 mega-plot showing the internal value representation across ALL contexts.
+    Rows: D1 Pull, D2 Pull, Total Subjective Value (V)
+    Columns: Dopamine Contexts (from Risk Averse to Risk Seeking)
+    Uses a globally locked color scale so intensities are directly comparable.
+    """
+    print(f"\nGenerating 3x{len(contexts)} Policy Subjective Values Mega-Plot...")
+    
+    all_grids = {}
+    global_max = 0
+
+    for ctx in contexts:
+        if ctx not in trialsfiles:
+            continue
+        td = load_trial_data(trialsfiles[ctx])
+        if 'Policy_Values' not in td:
+            continue
+
+        grid_V, grid_D1, grid_D2 = compute_policy_value_grids(
+            td['trials'], td['Policy_Values'], td['Policy_D1_Pull'], td['Policy_D2_Pull'], td['M']
+        )
+        all_grids[ctx] = (grid_D1, grid_D2, grid_V)
+
+        local_max = np.nanmax(np.abs([grid_D1, grid_D2, grid_V]))
+        if local_max > global_max:
+            global_max = local_max
+
+    if not all_grids:
+        print("Error: No valid policy value data found for mega-plot.")
+        return
+
+    # Increased hspace to 0.35 so the X-labels don't hit the titles below them
+    fig = plt.figure(figsize=(3 * len(contexts) + 2, 14)) 
+    gs = fig.add_gridspec(3, len(contexts), hspace=0.35, wspace=0.1)
+    
+    row_labels = ['D1 (Go) Pull', 'D2 (NoGo) Pull', 'Total Subjective Value\n($V=P-N$)']
+    sorted_contexts = sorted(all_grids.keys())
+
+    for row in range(3):
+        for col, ctx in enumerate(sorted_contexts):
+            grids = all_grids[ctx]
+            grid_to_plot = grids[row] 
+            
+            ax = fig.add_subplot(gs[row, col])
+            im = ax.imshow(grid_to_plot, cmap='RdBu', origin='lower',
+                           vmin=-global_max, vmax=global_max, aspect='auto')
+
+            if row == 0:
+                ax.set_title(f'Ctx = {ctx:+.2f}', fontsize=16, weight='bold', pad=15)
+
+            if col == 0:
+                ax.set_ylabel(f'{row_labels[row]}\n\nExpected Value (EV)', fontsize=14, weight='bold')
+                ax.set_yticks(range(5))
+                ax.set_yticklabels(['0.4', '', '0.7', '', '1.0'], fontsize=12)
+            else:
+                ax.set_yticks([])
+
+            # --- X-axis Labels (NOW ON ALL ROWS) ---
+            ax.set_xticks(range(5))
+            ax.set_xticklabels(['10%', '30%', '50%', '70%', '90%'], fontsize=12, rotation=45)
+            
+            # Put the actual "Reward Probability" text on every column to be safe
+            if col == 0:
+                ax.set_xlabel('Reward Probability', fontsize=14, weight='bold')
+
+    # Giant colorbar on the far right
+    cbar_ax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
+    cbar = fig.colorbar(im, cax=cbar_ax)
+    cbar.set_label('Logits (Preference)', rotation=270, labelpad=25, fontsize=16, weight='bold')
+    cbar.ax.tick_params(labelsize=12)
+
+    plt.suptitle("Policy Network Internal Value Representation Across Dopamine Contexts",
+                 fontsize=24, weight='bold', y=0.96)
+
+    plt.subplots_adjust(left=0.06, right=0.89, top=0.88, bottom=0.08)
+
+    savefile = os.path.join(figspath, 'mega_policy_subjective_values_3x9.png')
+    plt.savefig(savefile, dpi=300, bbox_inches='tight')
+    print(f"Saved 3x9 Mega-Plot to {savefile}")
+    plt.close()
+
 def do(action, args, config):
     """
     Manage analysis tasks.
@@ -867,7 +1590,7 @@ def do(action, args, config):
         try:
             trials_per_condition = int(args[0])
         except:
-            trials_per_condition = 2  # 2 trials per condition = 625*2 = 1250 trials
+            trials_per_condition = 10  # 2 trials per condition = 625*2 = 1250 trials
 
         model = config['model']
         pg = model.get_pg(config['savefile'], config['seed'], config['dt'])
@@ -907,6 +1630,276 @@ def do(action, args, config):
         # Plot behavioral heatmap
         trialsfile = runtools.behaviorfile(config['trialspath'])
         plot_heatmap(trialsfile, config['figspath'])
+        
+    elif action in ('opto-sweep', 'opto-sweep-dense'):
+            # Optogenetic VTA stimulation sweep
+            # Test different dopamine offset levels during inference
+
+            if action == 'opto-sweep-dense':
+                opto_offsets = np.linspace(-0.3, 0.3, 13)  # -0.3 to +0.3 in 0.05 steps
+            else:
+                opto_offsets = [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0]
+                # opto_offsets =  [-1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+            print("\n" + "="*80)
+            print(f"STARTING OPTOSTIMULATION SWEEP: {opto_offsets}")
+            print("="*80)
+
+            # Load the base model
+            model = config['model']
+            pg = model.get_pg(config['savefile'], config['seed'], config['dt'])
+
+            # Enable RPE modulation
+            if not getattr(pg, 'use_rpe_modulation', pg.config.get('use_rpe_modulation', False)):
+                print("\n⚠️  WARNING: RPE modulation is OFF. Enabling it now...")
+                pg.use_rpe_modulation = True
+            else:
+                pg.use_rpe_modulation = True
+
+            # Saved models may carry older clamp values. For acute push-pull
+            # optostimulation, use the direct-context-like [0.1, 1.9] gain range.
+            pg.rpe_modulation_gain = config.get(
+                'rpe_modulation_gain',
+                getattr(pg, 'rpe_modulation_gain', 3.0)
+            )
+            pg.rpe_modulation_clamp = config.get('rpe_modulation_clamp', 0.9)
+            print(
+                f"RPE modulation: gain={pg.rpe_modulation_gain}, "
+                f"clamp=±{pg.rpe_modulation_clamp}"
+            )
+
+            trialsfiles = {}
+
+            # Loop through opto levels, run inference, and save data
+            for opto_offset in opto_offsets:
+                print(f"\nProcessing Opto Offset = {opto_offset:+.3f}...")
+
+                # Set optostimulation parameters
+                pg.opto_stim_offset = opto_offset
+                pg.opto_stim_gain = 1.0
+                pg.opto_stim_phase = 'all'
+
+                pg.rng = np.random.RandomState(seed=999)  # Fixed seed for comparison
+
+                # Generate psychometric trial set (same as context-sweep)
+                task = model.Task()
+                psychometric_specs = generate_psychometric_trial_set(trials_per_comparison=2)
+                pg.rng.shuffle(psychometric_specs)
+
+                trials = []
+                for trial_spec in psychometric_specs:
+                    trials.append(task.get_condition(pg.rng, pg.dt, trial_spec))
+
+                # RUN INFERENCE WITH OPTOSTIMULATION
+                results = pg.run_trials(trials, return_states=True)
+
+                # Pack data
+                packed = [
+                    trials, results['U'], results['Z'], results['Z_b'],
+                    results['A'], results['R'], results['M'], results['perf'],
+                    results['r_policy'], results['r_value']
+                ]
+                if 'RPE_objective' in results:
+                    packed.extend([results['RPE_objective'], results['RPE_subjective']])
+
+                packed.extend([
+                    results['Policy_Values'],
+                    results['Policy_D1_Pull'],
+                    results['Policy_D2_Pull'],
+                    results.get('r_policy_mod', results['r_policy'])
+                ])
+
+                # Save file for this opto level
+                opto_str = f"{opto_offset:+.3f}".replace('.', 'p').replace('+', 'pos').replace('-', 'neg')
+
+                os.makedirs(config['trialspath'], exist_ok=True)
+                filepath = os.path.join(config['trialspath'], f'trials_activity_opto{opto_str}.pkl')
+
+                utils.save(filepath, packed)
+                trialsfiles[opto_offset] = filepath
+
+                print(f"  Saved: {filepath}")
+                if 'RPE_continuous' in results:
+                    rpe_mean = results['RPE_continuous'].mean().item()
+                    print(f"  Mean RPE: {rpe_mean:+.4f} (shift from natural: ~{opto_offset:+.3f})")
+
+            # Generate megaplot (reuse context plotting functions with opto data)
+            print("\n" + "="*80)
+            print("GENERATING OPTOSTIMULATION MEGAPLOT")
+            print("="*80)
+
+            # Use context plotting functions (they work the same way)
+            plot_opto_mega_comparison(opto_offsets, trialsfiles, config['savefile'], config['figspath'])
+            plot_opto_choice_probability_curves(opto_offsets, trialsfiles, config['figspath'])
+
+            print("\n✓ Optostimulation sweep complete!")
+            print(f"Results saved in: {config['trialspath']}")
+            print(f"Plots saved in: {config['figspath']}")
+
+    elif action in ('context-sweep', 'context-sweep-dense', 'context-sweep-curves-dense', 'context-sweep-0p2'):
+            # 1. Define the contexts we want to sweep
+            if action == 'context-sweep-0p2':
+                contexts = context_values_step(0.2)
+            elif action in ('context-sweep-dense', 'context-sweep-curves-dense'):
+                contexts = dense_context_values()
+            else:
+                contexts = [0]
+                # -1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0
+            
+            print("\n" + "="*80)
+            print(f"STARTING CONTEXT SWEEP: {contexts}")
+            print("="*80)
+
+            # 2. Load the base model ONCE
+            model = config['model']
+            pg = model.get_pg(config['savefile'], config['seed'], config['dt'])
+            
+            trialsfiles = {}
+            
+            # 3. Loop through contexts, run inference, and save data
+            for ctx in contexts:
+                print(f"\nProcessing Context = {ctx:+.2f}...")
+                
+                pg.rng = np.random.RandomState(seed=999) # Prevent sequence memorization
+                trials_per_condition = 2
+                # NEW CODE - STRUCTURED PSYCHOMETRIC TRIALS
+                task = model.Task()
+
+                # Generate psychometric trial set (matched-EV comparisons)
+                psychometric_specs = generate_psychometric_trial_set(trials_per_comparison=10)
+                pg.rng.shuffle(psychometric_specs)  # Randomize order
+
+                trials = []
+                for trial_spec in psychometric_specs:
+                    trials.append(task.get_condition(pg.rng, pg.dt, trial_spec))
+                
+                # RUN INFERENCE WITH EXPLICIT CONTEXT
+                results = pg.run_trials(trials, return_states=True, context_input=ctx)
+                
+                # Pack data to match format for load_trial_data()
+                packed = [
+                    trials, results['U'], results['Z'], results['Z_b'],
+                    results['A'], results['R'], results['M'], results['perf'],
+                    results['r_policy'], results['r_value']
+                ]
+                if 'RPE_objective' in results:
+                    packed.extend([results['RPE_objective'], results['RPE_subjective']])
+                
+                # --- NEW: Append the Policy Value Arrays ---
+                packed.extend([
+                    results['Policy_Values'], 
+                    results['Policy_D1_Pull'], 
+                    results['Policy_D2_Pull'],
+                    results.get('r_policy_mod', results['r_policy'])
+                ])
+                
+                # Save file specifically for this context
+                ctx_str = format_context_str(ctx)
+                
+                # Ensure the directory exists
+                os.makedirs(config['trialspath'], exist_ok=True)
+                
+                # Construct the proper file path inside the directory
+                filepath = os.path.join(config['trialspath'], f'trials_activity_ctx{ctx_str}.pkl')
+                
+                utils.save(filepath, packed)
+                trialsfiles[ctx] = filepath
+
+            if action == 'context-sweep-curves-dense':
+                plot_context_choice_probability_curves(contexts, trialsfiles, config['figspath'])
+                plot_context_choice_probability_mega(contexts, trialsfiles, config['figspath'])
+                return
+                
+            # 4. Generate the Mega-Plot
+            plot_context_mega_comparison(contexts, trialsfiles, config['savefile'], config['figspath'])
+
+            # 5. Generate the Policy Subjective Value Plots
+            print("\nGenerating Policy Subjective Value Plots...")
+            for ctx in contexts:
+                filepath = trialsfiles[ctx]
+                plot_policy_subjective_values(filepath, config['figspath'], context_val=ctx)
+
+            plot_mega_policy_subjective_values(contexts, trialsfiles, config['figspath'])
+            plot_context_choice_probability_curves(contexts, trialsfiles, config['figspath'])
+            plot_context_choice_probability_mega(contexts, trialsfiles, config['figspath'])
+
+    elif action in ('context-curves', 'context-curves-dense'):
+            if action == 'context-curves-dense':
+                contexts = dense_context_values()
+            else:
+                contexts = [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0]
+            trialsfiles = {}
+
+            for ctx in contexts:
+                ctx_str = format_context_str(ctx)
+                filepath = os.path.join(config['trialspath'], f'trials_activity_ctx{ctx_str}.pkl')
+                if not os.path.exists(filepath):
+                    raise SystemExit(
+                        f"Missing context trial file: {filepath}\n"
+                        "Run context-sweep once first to generate the fixed-context trial files."
+                    )
+                trialsfiles[ctx] = filepath
+
+            plot_context_choice_probability_curves(contexts, trialsfiles, config['figspath'])
+            plot_context_choice_probability_mega(contexts, trialsfiles, config['figspath'])
+
+    elif action == 'probe-policy':
+            print("\n" + "="*80)
+            print("🧠 DIRECT POLICY PROBE: LOGITS VS TEMPERATURE")
+            print("="*80)
+
+            model = config['model']
+            pg = model.get_pg(config['savefile'], config['seed'], config['dt'])
+
+            # Create one specific trial: Left = Safe (90%, small), Right = Risky (10%, large)
+            # target_l = 20 (90% prob), target_r = 0 (10% prob)
+            pg.rng = np.random.RandomState(seed=42)
+            task = model.Task()
+            base_trial = task.get_condition(pg.rng, pg.dt, {'target_l': 20, 'target_r': 0})
+
+            print(f"Targeting Trial: Left = Safe ({base_trial['prob_l']*100:.0f}%), Right = Risky ({base_trial['prob_r']*100:.0f}%)")
+            print(f"{'Context':<9} | {'Raw Logits (Fix, Left, Right)':<35} | {'Temp':<5} | {'Final Probs (Fix, Left, Right)':<35}")
+            print("-" * 95)
+
+            contexts = [-1.0, -0.5, 0.0, 0.5, 1.0]
+
+            for ctx in contexts:
+                # 1. ABSOLUTELY FREEZE ALL NOISE
+                # This ensures recurrent noise and visual noise are mathematically identical every loop
+                pg.rng = np.random.RandomState(seed=100)
+                torch.manual_seed(100)
+
+                # 2. Run the trial
+                trial = dict(base_trial)
+                results = pg.run_trials([trial], return_states=True, context_input=ctx)
+
+                # 3. Find the exact timestep before the choice was made
+                M = results['M'][:, 0].cpu().numpy()
+                last_t = int(np.sum(M)) - 1
+
+                # 4. Extract the GRU's raw firing rate at that exact timestep
+                r_t = results['r_policy'][last_t, 0]
+
+                # 5. Extract the RAW Logits (what the GRU actually "thinks")
+                logits = pg.policy_net.output_layer(r_t.unsqueeze(0), temperature=1.0, return_logits=True).squeeze()
+
+                # 6. Extract the Temperature and final Probabilities
+                if pg.use_context_temperature:
+                    temp_tensor = pg._compute_temperature(1, context=torch.tensor([ctx], device=pg.device))
+                    temp = temp_tensor.item()
+                else:
+                    temp = 1.0
+
+                probs = torch.softmax(logits / temp, dim=-1).squeeze().detach().cpu().numpy()
+                logits_np = logits.detach().cpu().numpy()
+
+                # Format printing
+                log_str = f"[{logits_np[0]:>6.2f}, {logits_np[1]:>6.2f}, {logits_np[2]:>6.2f}]"
+                prob_str = f"[{probs[0]:>5.1%}, {probs[1]:>5.1%}, {probs[2]:>5.1%}]"
+
+                print(f"{ctx:>+9.2f} | {log_str:<35} | {temp:>4.2f} | {prob_str:<35}")
+                
+            print("="*80 + "\n")
 
     elif action == 'mega-comparison':
         # Define all kappa values
@@ -1083,7 +2076,7 @@ def do(action, args, config):
         if len(args) > 1:
             n_examples = int(args[1])
         else:
-            n_examples = 10
+            n_examples = 2
 
         print(f"\nGenerating RPE signal plots (κ={kappa})...")
         results = plot_rpe_signals(trialsfile, config['figspath'], kappa=kappa, n_examples=n_examples)
@@ -1223,15 +2216,120 @@ def do(action, args, config):
             print("\nUsage: kappa-sweep [kappa_min] [kappa_max] [n_kappas]")
             print("Example: kappa-sweep -0.8 0.8 9")
 
+    elif action == 'context-sweep-gaussian':
+        # Run context sweep with Gaussian sampling around each context mean
+        try:
+            # Parse arguments
+            c_min = float(args[0]) if len(args) > 0 else -1.0
+            c_max = float(args[1]) if len(args) > 1 else 1.0
+            c_step = float(args[2]) if len(args) > 2 else 0.1
+            context_std = float(args[3]) if len(args) > 3 else 0.1
+            trials_per_condition = int(args[4]) if len(args) > 4 else 2
+
+            print(f"\n{'='*70}")
+            print("CONTEXT SWEEP WITH GAUSSIAN SAMPLING")
+            print(f"{'='*70}")
+            print(f"  Context range: [{c_min:.2f}, {c_max:.2f}], step={c_step:.2f}")
+            print(f"  Gaussian std: {context_std:.2f}")
+            print(f"  Trials per condition: {trials_per_condition}")
+
+            # Generate context means
+            contexts = np.arange(c_min, c_max + c_step/2, c_step)
+            print(f"  Total contexts: {len(contexts)}")
+            print(f"  Contexts: {contexts}")
+
+            # Load the model
+            model = config['model']
+            pg = model.get_pg(config['savefile'], config['seed'], config['dt'])
+
+            trialsfiles = {}
+
+            # Loop through contexts, run inference with Gaussian sampling
+            for ctx_mean in contexts:
+                print(f"\nProcessing Context mean = {ctx_mean:+.2f}...")
+
+                pg.rng = np.random.RandomState(seed=999)
+                task = model.Task()
+
+                # Generate psychometric trial set
+                psychometric_specs = generate_psychometric_trial_set(trials_per_comparison=trials_per_condition)
+                pg.rng.shuffle(psychometric_specs)
+
+                trials = []
+                for trial_spec in psychometric_specs:
+                    trials.append(task.get_condition(pg.rng, pg.dt, trial_spec))
+
+                # RUN INFERENCE WITH GAUSSIAN-SAMPLED CONTEXT
+                context_spec = {
+                    'distribution': 'gaussian',
+                    'mean': float(ctx_mean),
+                    'std': context_std,
+                    'low': -1.0,
+                    'high': 1.0
+                }
+                results = pg.run_trials(trials, return_states=True, context_input=context_spec)
+
+                # Pack data to match format for load_trial_data()
+                packed = [
+                    trials, results['U'], results['Z'], results['Z_b'],
+                    results['A'], results['R'], results['M'], results['perf'],
+                    results['r_policy'], results['r_value']
+                ]
+                if 'RPE_objective' in results:
+                    packed.extend([results['RPE_objective'], results['RPE_subjective']])
+
+                # Append the Policy Value Arrays
+                packed.extend([
+                    results['Policy_Values'],
+                    results['Policy_D1_Pull'],
+                    results['Policy_D2_Pull'],
+                    results.get('r_policy_mod', results['r_policy'])
+                ])
+
+                # Save file for this context mean
+                ctx_str = format_context_str(ctx_mean)
+                os.makedirs(config['trialspath'], exist_ok=True)
+                filepath = os.path.join(config['trialspath'], f'trials_activity_ctx{ctx_str}_gaussian.pkl')
+
+                utils.save(filepath, packed)
+                trialsfiles[ctx_mean] = filepath
+
+                # Print actual sampled context statistics
+                actual_contexts = results['contexts'].cpu().numpy()
+                print(f"  Actual context: mean={actual_contexts.mean():.3f}, std={actual_contexts.std():.3f}")
+
+            # Generate the plots using existing functions
+            print(f"\n{'='*70}")
+            print("GENERATING PLOTS")
+            print(f"{'='*70}")
+
+            plot_context_mega_comparison(list(contexts), trialsfiles, config['savefile'], config['figspath'])
+            plot_mega_policy_subjective_values(list(contexts), trialsfiles, config['figspath'])
+            plot_context_choice_probability_curves(list(contexts), trialsfiles, config['figspath'])
+            plot_context_choice_probability_mega(list(contexts), trialsfiles, config['figspath'])
+
+            print(f"\n{'='*70}")
+            print("Context sweep with Gaussian sampling complete!")
+            print(f"{'='*70}")
+
+        except Exception as e:
+            print(f"Error in context-sweep-gaussian: {e}")
+            import traceback
+            traceback.print_exc()
+            print("\nUsage: context-sweep-gaussian [c_min] [c_max] [c_step] [context_std] [trials_per_condition]")
+            print("Example: context-sweep-gaussian -1.0 1.0 0.1 0.1 2")
+
     else:
         print(f"Unrecognized action: {action}")
         print("Available actions:")
-        print("  trials-b           - Generate trial data (behavior only)")
-        print("  trials-a           - Generate trial data with neural activity")
-        print("  behavior           - Plot behavioral heatmap")
-        print("  neural-analysis    - Complete neural activity analysis (requires trials-a)")
-        print("  kappa-comparison   - Compare multiple kappa values")
-        print("  kappa-sweep        - Automated sweep across kappa values")
+        print("  trials-b                - Generate trial data (behavior only)")
+        print("  trials-a                - Generate trial data with neural activity")
+        print("  behavior                - Plot behavioral heatmap")
+        print("  neural-analysis         - Complete neural activity analysis (requires trials-a)")
+        print("  kappa-comparison        - Compare multiple kappa values")
+        print("  kappa-sweep             - Automated sweep across kappa values")
+        print("  context-sweep           - Context sweep with FIXED context values")
+        print("  context-sweep-gaussian  - Context sweep with GAUSSIAN sampling around each mean")
 
 
 def plot_regression_scatter(trialsfile, figspath, network='policy', kappa=None):
@@ -1859,3 +2957,249 @@ def plot_rpe_signals(trialsfile, figspath, kappa=None, n_examples=10):
         'rpe_subjective': rpe_subj,
         'kappa': kappa
     }
+
+def plot_context_mega_comparison(contexts, trialsfiles, modelfile, figspath):
+    """
+    Create an 11-row mega-plot comparing behavior, neural activity, and 
+    biological subjective values across context values.
+    """
+    print(f"\nCREATING MEGA-PLOT: 11 ROWS × {len(contexts)} CONTEXT VALUES\n")
+
+    # =====================================================================
+    # 🔍 DIAGNOSTIC BLOCK
+    # =====================================================================
+    print("\n" + "="*60)
+    print("🔍 CONTEXT SENSITIVITY DIAGNOSTICS")
+    print("="*60)
+
+    try:
+        from pyrl import utils
+        model_data = utils.load(modelfile)
+        policy_params = model_data.get('best_policy_params', {})
+        Win_policy = policy_params.get('Win')
+        Wout_policy = policy_params.get('Wout')
+
+        if Win_policy is not None:
+            Nin = Win_policy.shape[1]
+            print(f"Policy Network Input Size (Nin): {Nin}")
+            
+            if Nin >= 8:
+                context_weights = Win_policy[:, 7] 
+                print(f"\nContext Input Weights (Win[:, 7]):")
+                print(f"  Mean:    {np.mean(context_weights):.6f}")
+                print(f"  Std Dev: {np.std(context_weights):.6f}")
+                print(f"  Max Abs: {np.max(np.abs(context_weights)):.6f}")
+                
+                if np.std(context_weights) < 1e-4:
+                    print("  ⚠️ WARNING: Context input weights are effectively ZERO.")
+            else:
+                print("  ⚠️ WARNING: Nin is less than 8. Context is NOT connected to the GRU!")
+
+        if Wout_policy is not None:
+            half_N = Wout_policy.shape[0] // 2
+            w_d1 = Wout_policy[:half_N]
+            w_d2 = Wout_policy[half_N:]
+            print("\nPolicy Output Weight Balance:")
+            print(f"  D1 abs mean/std/norm: {np.mean(np.abs(w_d1)):.6f} / {np.std(w_d1):.6f} / {np.linalg.norm(w_d1):.6f}")
+            print(f"  D2 abs mean/std/norm: {np.mean(np.abs(w_d2)):.6f} / {np.std(w_d2):.6f} / {np.linalg.norm(w_d2):.6f}")
+            print(f"  D2/D1 norm ratio:     {np.linalg.norm(w_d2) / max(np.linalg.norm(w_d1), 1e-12):.6f}")
+
+        for pname, label in [
+            ('dopamine_sensitivity', 'Dopamine Sensitivity'),
+            ('dopamine_bias', 'Dopamine Bias')
+        ]:
+            arr = policy_params.get(pname)
+            if arr is not None:
+                half_N = arr.shape[0] // 2
+                d1 = arr[:half_N]
+                d2 = arr[half_N:]
+                print(f"\n{label} Balance:")
+                print(f"  D1 mean/std/absmean: {np.mean(d1):+.6f} / {np.std(d1):.6f} / {np.mean(np.abs(d1)):.6f}")
+                print(f"  D2 mean/std/absmean: {np.mean(d2):+.6f} / {np.std(d2):.6f} / {np.mean(np.abs(d2)):.6f}")
+                print(f"  D2/D1 absmean ratio: {np.mean(np.abs(d2)) / max(np.mean(np.abs(d1)), 1e-12):.6f}")
+    except Exception as e:
+        print(f"Could not load model weights for diagnostics: {e}")
+
+    modelfiles = {ctx: modelfile for ctx in contexts}
+    all_data, baseline_data = _load_comparison_data(contexts, trialsfiles, modelfiles)
+
+    if -1.0 in all_data and 1.0 in all_data:
+        ch_neg = all_data[-1.0]['choices']
+        ch_pos = all_data[1.0]['choices']
+        
+        min_len = min(len(ch_neg), len(ch_pos))
+        diff_choices = np.sum(ch_neg[:min_len] != ch_pos[:min_len])
+        
+        print(f"\nBehavioral Difference (ctx = -1.0 vs ctx = +1.0):")
+        print(f"  Total choices compared: {min_len}")
+        print(f"  Differing choices:      {diff_choices}")
+        
+        vg_neg = all_data[-1.0]['value_grid']
+        vg_pos = all_data[1.0]['value_grid']
+        vg_diff = np.nanmean(np.abs(vg_neg - vg_pos))
+        print(f"\nValue Grid Difference (ctx = -1.0 vs ctx = +1.0):")
+        print(f"  Mean absolute difference: {vg_diff:.6f}")
+
+    print("\nPolicy D1/D2 Pull Balance by Context:")
+    print("  ctx      |D1|      |D2|      D2/D1    D1std    D2std")
+    for ctx in contexts:
+        stats = all_data.get(ctx, {}).get('pull_stats')
+        if stats is None:
+            continue
+        ratio = stats['d2_choice_abs_mean'] / max(stats['d1_choice_abs_mean'], 1e-12)
+        print(
+            f"  {ctx:+.2f}   "
+            f"{stats['d1_choice_abs_mean']:.6f}  "
+            f"{stats['d2_choice_abs_mean']:.6f}  "
+            f"{ratio:.4f}  "
+            f"{stats['d1_std']:.6f}  "
+            f"{stats['d2_std']:.6f}"
+        )
+
+    print("="*60 + "\n")
+    # =====================================================================
+
+    if baseline_data is None and 0.0 in all_data:
+        baseline_data = all_data[0.0]
+
+    policy_lim, value_lim = _compute_weight_limits(all_data, baseline_data, contexts)
+
+    # Calculate global max for the D1/D2/V Policy grids so colors are comparable
+    grid_max_vals = []
+    for ctx in contexts:
+        if ctx in all_data and all_data[ctx].get('grid_V') is not None:
+            grid_max_vals.extend([
+                np.nanmax(np.abs(all_data[ctx]['grid_D1'])),
+                np.nanmax(np.abs(all_data[ctx]['grid_D2'])),
+                np.nanmax(np.abs(all_data[ctx]['grid_V']))
+            ])
+    global_grid_max = max(grid_max_vals) if grid_max_vals else 1.0
+
+    import matplotlib.pyplot as plt
+    # Height increased to 33 to accommodate 11 rows
+    fig = plt.figure(figsize=(3 * len(contexts), 33)) 
+    gs = fig.add_gridspec(11, len(contexts), hspace=0.35, wspace=0.25)
+
+    def get_title(ctx):
+        return f'Ctx = {ctx:+.1f}'
+
+    _plot_row_behavior(fig, gs, 0, contexts, all_data, get_title)
+    _plot_row_values(fig, gs, 1, contexts, all_data)
+    _plot_row_regression(fig, gs, 2, contexts, all_data, 'policy', 'Policy\nβEV')
+    _plot_row_regression(fig, gs, 3, contexts, all_data, 'value', 'Value\nβEV')
+    _plot_row_regression_keys(fig, gs, 4, contexts, all_data,
+                              'beta_hh_ll_policy_d1', 'beta_ev_policy_d1', 'Policy D1\nβEV')
+    _plot_row_regression_keys(fig, gs, 5, contexts, all_data,
+                              'beta_hh_ll_policy_d2', 'beta_ev_policy_d2', 'Policy D2\nβEV')
+    _plot_row_beta_vs_weights_keys(fig, gs, 6, contexts, all_data,
+                                   'Wout_policy_d1', 'beta_hh_ll_policy_d1', 'red', policy_lim,
+                                   'Policy D1\nOutput Weight')
+    _plot_row_beta_vs_weights_keys(fig, gs, 7, contexts, all_data,
+                                   'Wout_policy_d2', 'beta_hh_ll_policy_d2', 'red', policy_lim,
+                                   'Policy D2\nOutput Weight')
+
+    # --- NEW: Rows 8, 9, 10 for the Biological Subjective Values ---
+    _plot_row_policy_grids(fig, gs, 8, contexts, all_data, 'grid_D1', 'Policy D1\nGo Pull', global_grid_max)
+    _plot_row_policy_grids(fig, gs, 9, contexts, all_data, 'grid_D2', 'Policy D2\nNoGo Pull', global_grid_max)
+    _plot_row_policy_grids(fig, gs, 10, contexts, all_data, 'grid_V', 'Policy Total\nV = P - N', global_grid_max)
+
+    plt.tight_layout(rect=[0, 0, 1, 1])
+
+    import os
+    savefile = os.path.join(figspath, 'mega_comparison_context_sweep.png')
+    plt.savefig(savefile, dpi=300, bbox_inches='tight')
+    print(f"\nSaved 11-row context mega-plot to {savefile}\n")
+    plt.close()
+
+def _plot_row_policy_grids(fig, gs, row, col_keys, all_data, grid_key, ylabel, global_max):
+    """Plot Row: Policy Internal Value Grids (D1, D2, V) with swapped axes."""
+    axes = []
+    im = None
+    for idx, key in enumerate(col_keys):
+        ax = fig.add_subplot(gs[row, idx])
+        axes.append(ax)
+        if key not in all_data or all_data[key].get(grid_key) is None:
+            ax.set_xticks([]); ax.set_yticks([])
+            continue
+            
+        data = all_data[key][grid_key]
+        im = ax.imshow(data, cmap='RdBu', origin='lower', vmin=-global_max, vmax=global_max, aspect='auto')
+        
+        ax.set_yticks(range(5))
+        ax.set_xticks(range(5))
+        
+        # Y-Axis (Expected Value)
+        if idx == 0:
+            ax.set_ylabel(ylabel, fontsize=10)
+            ax.set_yticklabels(['0.4', '', '0.7', '', '1.0'], fontsize=8)
+        else:
+            ax.set_yticklabels([])
+            
+        # X-Axis (Probability) - NOW APPLIED TO ALL ROWS
+        if idx == 0:
+            ax.set_xlabel('Reward Probability', fontsize=9)
+        ax.set_xticklabels(['10%', '30%', '50%', '70%', '90%'], fontsize=8, rotation=45)
+            
+    if im is not None:
+        pos = axes[-1].get_position()
+        cax = fig.add_axes([pos.x1 + 0.01, pos.y0, 0.01, pos.height])
+        cbar = plt.colorbar(im, cax=cax)
+        cbar.set_label('Logits (Preference)', fontsize=9, rotation=270, labelpad=15)
+        cbar.ax.tick_params(labelsize=8)
+    return axes
+
+
+# ============================================================================
+# OPTOGENETIC VTA STIMULATION PLOTTING FUNCTIONS
+# ============================================================================
+
+def plot_opto_mega_comparison(opto_offsets, trialsfiles, modelfile, figspath):
+    """
+    Optostimulation megaplot - reuses context megaplot with opto labels.
+
+    Parameters
+    ----------
+    opto_offsets : list
+        List of optostimulation offset values
+    trialsfiles : dict
+        Mapping from opto_offset → trial data filepath
+    modelfile : str
+        Path to model file
+    figspath : str
+        Directory to save figures
+    """
+    # Call context megaplot function with opto data
+    plot_context_mega_comparison(opto_offsets, trialsfiles, modelfile, figspath)
+
+    # Rename the saved file to reflect optostimulation
+    old_file = os.path.join(figspath, 'context_mega_comparison.png')
+    new_file = os.path.join(figspath, 'opto_mega_comparison.png')
+
+    if os.path.exists(old_file):
+        os.rename(old_file, new_file)
+        print(f"  Saved: {new_file}")
+
+
+def plot_opto_choice_probability_curves(opto_offsets, trialsfiles, figspath):
+    """
+    Plot choice probability curves across optostimulation levels.
+
+    Parameters
+    ----------
+    opto_offsets : list
+        List of optostimulation offset values
+    trialsfiles : dict
+        Mapping from opto_offset → trial data filepath
+    figspath : str
+        Directory to save figures
+    """
+    # Call context choice curve functions with opto data.
+    plot_context_choice_probability_curves(opto_offsets, trialsfiles, figspath)
+    plot_context_choice_probability_mega(opto_offsets, trialsfiles, figspath)
+
+    old_file = os.path.join(figspath, 'context_choice_probability_curves_mega.png')
+    new_file = os.path.join(figspath, 'opto_choice_probability_mega.png')
+
+    if os.path.exists(old_file):
+        os.rename(old_file, new_file)
+        print(f"  Saved: {new_file}")

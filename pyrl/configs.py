@@ -11,13 +11,16 @@ default = {
     'p0':                    1,
     'baseline_N':            100,
     'baseline_p0':           1,
-    'lr':                    0.0005,
-    'baseline_lr':           0.0005,
-    'max_iter':              1000,
+    'lr':                    0.001,
+    'baseline_lr':           0.005,
+    'lr_decay':              0.001,    # Learning rate decay factor (0 = no decay, 0.001 = slow decay)
+    'baseline_lr_decay':     0.001,  # Baseline LR decay (mimics synaptic consolidation)
+    'max_iter':              3000,
     'fix':                   [],
     'baseline_fix':          [],
     'target_reward':         np.inf,
     'mode':                  'episodic',
+    'advantage_mode':        'mc',   # 'mc' (Monte Carlo returns) or 'td' (TD(0) bootstrapping)
     'network_type':          'gru',
     'baseline_network_type': 'gru',
     'R_ABORTED':             -1,
@@ -31,6 +34,8 @@ default = {
     'baseline_var_rec':      0.01,
     'L2_r':                  0,
     'baseline_L2_r':         0,
+    'activity_balance':      0,
+    'baseline_activity_balance': 0.03,
     'Win':                   1,
     'baseline_Win':          1,
     'bout':                  0,
@@ -42,8 +47,13 @@ default = {
     'baseline_rho':          2,
     'L1_Wrec':               0,
     'L2_Wrec':               1e-5,
+    'L2_Wout':               1e-4,     # L2 regularization for MLP output layers (Critic) - OFF
+    'baseline_grad_clip':    None, # Gradient clipping for baseline network - OFF
+    'policy_dropout':        0.2,
     'policy_seed':           1,
     'baseline_seed':         2,
+    "advantage_clip":        None,
+    "normalize_advantages":  True,
 
     # ========== Distributional RL Settings ==========
     # Enable these flags to use distributional critic with quantile regression
@@ -58,7 +68,75 @@ default = {
     'use_context_temperature':        False,  # Let context signal modulate softmax temperature
     'temperature_base':               1.0,    # Base temperature for softmax (1.0 = standard softmax)
     'temperature_context_scale':      0.5,    # How much context affects temperature (0 = no effect)
+    'context_decision_only':          False,  # Apply context input only during decision period
+
+    # Baseline input composition
+    'baseline_include_state':         True,  # If True, include task inputs U in baseline network inputs
+
+    # Training-time context sampling for the external context signal c
+    'context_distribution':           'gaussian',  # 'uniform' or 'gaussian'
+    'context_uniform_low':            -1.0,
+    'context_uniform_high':           1.0,
+    'context_gaussian_mean':          0.0,
+    'context_gaussian_std':           0.8,
+    'training_context_input':         True,
 
     # Context input to baseline network (for future extensions)
     'context_to_baseline':            False,  # Add context as explicit input to baseline network
+
+    # ========== Context Signal Extraction ==========
+    # Controls how context signal is computed from baseline hidden states
+    'context_projection_learned':     False,  # True: Learn linear projection W*baseline_states + b
+                                               # False: Simple sum (tanh(sum(baseline_states)))
+    'context_projection_lr':          0.001,  # Learning rate for context projection (if learned)
+
+    # ========== Expected Value Computation from Quantiles ==========
+    # IMPORTANT: Median ≠ Expected Value for skewed distributions
+    # This flag determines how to compute EV from the distributional critic
+    'use_quantile_mean_for_ev':       True,   # True: EV = mean(all quantiles) - statistically correct
+                                               # False: EV = median quantile (Q_0.50) - simpler but biased for skewed distributions
+
+    # ========== RPE-Based D1/D2 Modulation ==========
+    # Use continuous RPE signal from value network to modulate D1/D2 receptor occupancy
+    'use_rpe_modulation':             True,  # Enable RPE-based D1/D2 modulation during cue phase
+    'rpe_modulation_gain':            3.0,    # Gain factor for RPE → dopamine mapping (default: 1.0)
+    'rpe_modulation_clamp':           0.9,    # Clamp RPE signal to [-clamp, +clamp] before modulation
+
+    # Trial-level VTA dopamine context sampled during training.
+    # This is added to the natural RPE-derived dopamine signal and applied through
+    # D1/D2 gain modulation, not through the sensory context input channel.
+    'vta_training_context':           False,
+    'vta_context_distribution':       'uniform',
+    'vta_context_low':                -0.9,
+    'vta_context_high':               0.9,
+    'vta_context_mean':               0.0,
+    'vta_context_std':                0.3,
+    'vta_context_weight':             1.5,
+
+    # Per-neuron dopamine receptor sensitivity. When enabled, dopamine remains
+    # push-pull but each MSN has a different gain magnitude.
+    'dopamine_heterogeneous_sensitivity': True,
+    'dopamine_sensitivity_min':       0.3,
+    'dopamine_sensitivity_max':       1.0,
+    'dopamine_sensitivity_learned':   False,
+    'dopamine_bias_enabled':          False,
+    'dopamine_bias_learned':          True,
+    'dopamine_bias_init':             0.0,
+    'dopamine_bias_max_abs':          0.7,
+    'dopamine_modulation_mode':       'linear',  # 'linear' or 'hill'
+    'dopamine_hill_base_da':          1.0,
+    'dopamine_hill_da_range':         1.0,
+    'dopamine_hill_ec50_d1':          1.0,
+    'dopamine_hill_ec50_d2':          0.07,
+    'dopamine_hill_coefficient':      1.0,
+    'dopamine_hill_gain_scale':       2.0,
+    'dopamine_learning_modulation_mode': 'linear',  # 'linear' or 'hill'
+    'dopamine_learning_eta_min':      0.1,
+    'dopamine_learning_eta_max':      1.9,
+
+    # ========== Optogenetic VTA Stimulation (Inference Only) ==========
+    # Simulate optogenetic manipulation of dopamine neurons during inference
+    'opto_stim_offset':               0.0,    # Constant offset added to RPE (+ve = more DA, -ve = less DA)
+    'opto_stim_gain':                 1.0,    # Multiplicative gain on RPE (>1 = amplify, <1 = attenuate)
+    'opto_stim_phase':                'all',  # When to apply: 'all', 'cue', 'decision', 'fixation'
 }

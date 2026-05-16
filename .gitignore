@@ -19,3 +19,9 @@ data/weights/
 data/figures/
 data/trials/
 data/*
+data_progress/
+*json
+*html
+*jpg
+*webp
+*md

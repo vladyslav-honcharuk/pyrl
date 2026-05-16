@@ -297,6 +297,92 @@ def get_default_quantiles(n_quantiles):
     return tau_values
 
 
+def compute_expected_value_from_quantiles(quantile_values, tau_values=None, method='mean'):
+    """
+    Compute expected value (mean) from quantile predictions.
+
+    IMPORTANT: The median quantile (Q_0.50) is NOT the expected value!
+    For skewed distributions, median ≠ mean. This function correctly computes
+    the expected value by integrating across the quantile distribution.
+
+    Args:
+        quantile_values: torch.Tensor, shape (..., n_quantiles)
+            Predicted quantile values. The quantile dimension should be last.
+        tau_values: torch.Tensor, shape (n_quantiles,), optional
+            Quantile fractions. If None, assumes evenly spaced quantiles.
+        method: str, one of ['mean', 'trapz', 'weighted']
+            - 'mean': Simple average across quantiles (fast, good for evenly spaced quantiles)
+            - 'trapz': Trapezoidal integration (more accurate for unevenly spaced quantiles)
+            - 'weighted': Weighted sum based on quantile spacing
+
+    Returns:
+        torch.Tensor, shape (...)
+            Expected value (mean of the return distribution)
+
+    Example:
+        >>> q_values = torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]])  # (1, 5)
+        >>> tau = torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9])
+        >>> ev = compute_expected_value_from_quantiles(q_values, tau, method='mean')
+        >>> # ev ≈ 3.0 (mean of quantiles)
+        >>> # Note: median would be 3.0, but for skewed distributions these differ!
+    """
+    if method == 'mean':
+        # Simple average across quantiles
+        # Fast and good approximation for evenly-spaced quantiles
+        return torch.mean(quantile_values, dim=-1)
+
+    elif method == 'trapz':
+        # Trapezoidal integration: E[Z] = ∫ Q(τ) dτ
+        # More accurate for unevenly spaced quantiles
+        if tau_values is None:
+            n_quantiles = quantile_values.shape[-1]
+            tau_values = torch.linspace(0, 1, n_quantiles + 2, device=quantile_values.device)[1:-1]
+
+        # Extend tau to [0, 1] and quantiles to boundaries
+        # Assume Q(0) = Q(τ_min) and Q(1) = Q(τ_max)
+        tau_ext = torch.cat([
+            torch.tensor([0.0], device=tau_values.device),
+            tau_values,
+            torch.tensor([1.0], device=tau_values.device)
+        ])
+
+        q_ext = torch.cat([
+            quantile_values[..., :1],  # Extend to τ=0
+            quantile_values,
+            quantile_values[..., -1:]  # Extend to τ=1
+        ], dim=-1)
+
+        # Trapezoidal integration
+        # ∫ Q(τ) dτ ≈ Σ (Q(τ_i) + Q(τ_{i+1})) * (τ_{i+1} - τ_i) / 2
+        delta_tau = tau_ext[1:] - tau_ext[:-1]
+        trapz_sum = ((q_ext[..., :-1] + q_ext[..., 1:]) / 2) * delta_tau.view(*([1] * (q_ext.dim() - 1)), -1)
+
+        return torch.sum(trapz_sum, dim=-1)
+
+    elif method == 'weighted':
+        # Weighted sum based on quantile spacing
+        # Each quantile Q(τ_i) represents the region [τ_{i-1/2}, τ_{i+1/2}]
+        if tau_values is None:
+            n_quantiles = quantile_values.shape[-1]
+            tau_values = torch.linspace(0, 1, n_quantiles + 2, device=quantile_values.device)[1:-1]
+
+        # Compute weights as the width of each quantile's region
+        # For τ_i, weight = (τ_{i+1} - τ_{i-1}) / 2
+        tau_ext = torch.cat([
+            torch.tensor([0.0], device=tau_values.device),
+            tau_values,
+            torch.tensor([1.0], device=tau_values.device)
+        ])
+
+        weights = (tau_ext[2:] - tau_ext[:-2]) / 2
+        weights = weights.view(*([1] * (quantile_values.dim() - 1)), -1)  # Broadcast to match quantile_values
+
+        return torch.sum(quantile_values * weights, dim=-1)
+
+    else:
+        raise ValueError(f"Unknown method: {method}. Choose from ['mean', 'trapz', 'weighted']")
+
+
 def check_quantile_ordering(q_values, tau_values, tolerance=1e-3):
     """
     Check if predicted quantiles are properly ordered (monotonicity constraint).

@@ -1507,15 +1507,7 @@ class PolicyGradient:
         td_error : torch.Tensor, shape (T, B)
             Online TD error at each timestep
         """
-        # Handle distributional values: use expected value or median
-        if len(values.shape) == 3:
-            # Distributional mode: shape (T, B, n_quantiles)
-            if self.use_quantile_mean_for_ev:
-                # Correct expected value: mean of quantiles
-                values = compute_expected_value_from_quantiles(values, self.tau_values, method='mean')
-            else:
-                # Biased but biologically plausible: median quantile
-                values = values[..., values.shape[-1] // 2]
+        values = self._scalar_values(values)
 
         T, B = rewards.shape
         td_error = torch.zeros_like(rewards)
@@ -1535,18 +1527,8 @@ class PolicyGradient:
 
 
     def _update_baseline(self, results, optimizer):
-        """Update baseline network, then recompute V with the UPDATED critic
-        so the policy gets a fresh (non-stale) baseline value."""
-        # Ensure gamma is set
-        if not hasattr(self, 'gamma'):
-            if np.isinf(self.config.get('tau_reward', np.inf)):
-                self.gamma = 1
-            else:
-                self.gamma = np.exp(-self.dt / self.config['tau_reward'])
-            self.gamma = min(self.gamma, 0.9999)
-
-        # === Critic update step ===
-        loss, _ = self._standard_mse_loss(results)
+        """Update the critic and refresh cached values used by the policy step."""
+        loss, _ = self._baseline_loss(results)
 
         optimizer.zero_grad()
         loss.backward()
@@ -1557,98 +1539,96 @@ class PolicyGradient:
 
         optimizer.step()
 
-        # === CRITICAL: recompute V with the UPDATED critic ===
-        # This is the fix. The old code stored z_all BEFORE optimizer.step(),
-        # giving the policy a stale baseline. For TD(0)/GAE this is fatal because
-        # the advantage formula directly uses V; for MC it's just a stale control
-        # variate (still unbiased) but it's strictly better to be fresh.
         with torch.no_grad():
-            _, z_all_fresh = self._standard_mse_loss(results)
+            _, z_all_fresh = self._baseline_loss(results)
+        results['Z_b'] = z_all_fresh.detach()
 
-        results["Z_b"] = z_all_fresh.detach()
+    def _baseline_inputs(self, results):
+        """Build critic inputs from policy rates, action, and optional task state."""
+        inputs = [results['r_policy'], results['A']]
+        if self.config.get('baseline_include_state', False):
+            inputs.insert(0, results['U'])
+        return torch.cat(inputs, dim=-1)
+
+    def _baseline_forward(self, results, squeeze_scalar=True):
+        """Run the critic over the stored trial batch and return all timesteps."""
+        baseline_inputs = self._baseline_inputs(results)[:-1]
+        batch_size = baseline_inputs.shape[1]
+        x0 = self.baseline_net.x0.unsqueeze(0).expand(batch_size, -1)
+
+        z_pred, states = self.baseline_net(
+            baseline_inputs,
+            results['Q_b'][:-1],
+            x0
+        )
+        z0, _ = self.baseline_net.step_0(x0)
+
+        if squeeze_scalar:
+            if z0.dim() == 2 and z0.shape[-1] == 1:
+                z0 = z0.squeeze(-1)
+            if z_pred.dim() == 3 and z_pred.shape[-1] == 1:
+                z_pred = z_pred.squeeze(-1)
+        elif z0.dim() == 3:
+            z0 = z0.squeeze(1)
+
+        return torch.cat([z0.unsqueeze(0), z_pred], dim=0), states, x0
+
+    def _scalar_values(self, values):
+        """Collapse scalar or distributional critic output to shape (T, B)."""
+        if values.dim() != 3:
+            return values
+        if self.use_quantile_mean_for_ev:
+            return compute_expected_value_from_quantiles(
+                values, self.tau_values, method='mean'
+            )
+        return values[..., values.shape[-1] // 2]
+
+    def _critic_target(self, rewards, values, mask):
+        """Return the critic target for the configured advantage mode."""
+        mode = self.config.get('advantage_mode', 'mc')
+        if mode == 'mc':
+            return self._compute_returns(rewards, self.gamma)
+        if mode == 'lambda':
+            return self._compute_lambda_returns(
+                rewards,
+                values.detach(),
+                mask,
+                self.gamma,
+                lam=self.config.get('td_lambda', 0.9)
+            )
+
+        target = torch.zeros_like(values)
+        target[:-1] = rewards[:-1] + self.gamma * values[1:].detach() * mask[1:]
+        target[-1] = rewards[-1]
+        return target
+
+    def _baseline_loss(self, results):
+        """Dispatch to the active critic objective."""
+        if self.use_distributional:
+            return self._quantile_huber_loss(results)
+        if self.config.get('baseline_loss') == 'expectile':
+            loss, z_all, _ = self._expectile_mse_loss(results)
+            return loss, z_all
+        return self._standard_mse_loss(results)
 
     def _standard_mse_loss(self, results):
-            """Asymmetric MSE loss so the Critic learns context-modulated (subjective) values."""
-            R = results['R']
-            M = results['M']
+        """Mean-squared critic loss against MC, TD(0), or lambda targets."""
+        R = results['R']
+        M = results['M']
+        z_all, states_b, x0 = self._baseline_forward(results, squeeze_scalar=True)
 
-            r_policy = results['r_policy']
-            A = results['A']
-            if self.config.get('baseline_include_state', False):
-                U = results['U']
-                baseline_inputs = torch.cat([U, r_policy, A], dim=-1)
-            else:
-                baseline_inputs = torch.cat([r_policy, A], dim=-1)
-            baseline_inputs_trimmed = baseline_inputs[:-1]
-            B_size = baseline_inputs_trimmed.shape[1]
-            x0 = self.baseline_net.x0.unsqueeze(0).expand(B_size, -1)
+        with torch.no_grad():
+            target = self._critic_target(R, z_all, M)
 
-            z_pred, states_b = self.baseline_net(
-                baseline_inputs_trimmed,
-                results['Q_b'][:-1],
-                x0
-            )
-            z_0, _ = self.baseline_net.step_0(x0)
-            
-            if z_0.dim() == 2:
-                z_0 = z_0.squeeze(-1)
-            if z_pred.dim() == 3:
-                z_pred = z_pred.squeeze(-1)
+        delta_squared = (target - z_all) ** 2 * M
+        n_valid = M.sum()
+        if n_valid > 0:
+            loss = torch.sum(delta_squared) / n_valid
+        else:
+            loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
-            z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)
-
-            with torch.no_grad():
-                if self.config.get('advantage_mode', 'mc') == 'mc':
-                    # Monte Carlo: use full episode returns
-                    target = self._compute_returns(R, self.gamma)
-                else:
-                    # TD(0): use bootstrapped one-step returns
-                    target = torch.zeros_like(z_all)
-                    target[:-1] = R[:-1] + self.gamma * z_all[1:].detach() * M[1:]
-                    target[-1] = R[-1]
-                
-            # with torch.no_grad():
-            #     target = self._compute_lambda_returns(
-            #         R, z_all.detach(), M, self.gamma,
-            #         lam=self.config.get('td_lambda', 0.99)
-            #     )
-            # Delta is Target - Prediction
-            delta = target - z_all
-            
-            # 2. Derive Bounded Context Multipliers (Same as Actor)
-            context_signal = results.get('contexts', None)
-            
-            if context_signal is not None:
-                # Keep it bounded between [-0.9, 0.9] to prevent zero-gradients
-                c_bounded = context_signal * 0.9 
-                
-                eta_plus = 1.0 + c_bounded  
-                eta_minus = 1.0 - c_bounded 
-                
-                eta_plus = eta_plus.unsqueeze(0).expand_as(delta)
-                eta_minus = eta_minus.unsqueeze(0).expand_as(delta)
-            else:
-                eta_plus = torch.ones_like(delta)
-                eta_minus = torch.ones_like(delta)
-
-            # 3. Asymmetric Squared Error
-            # Penalize underestimations by eta_plus, overestimations by eta_minus
-            # delta_squared = torch.where(delta > 0, eta_plus * (delta ** 2), eta_minus * (delta ** 2))
-            
-            delta_squared = delta ** 2
-            # Apply valid timestep mask
-            delta_squared = delta_squared * M
-            
-            n_valid = M.sum()
-            if n_valid > 0:
-                loss = torch.sum(delta_squared) / n_valid
-            else:
-                loss = torch.tensor(0.0, device=self.device, requires_grad=True)
-
-            reg = self.baseline_net.get_regs(x0, states_b, M[:-1])
-            loss += reg
-
-            return loss, z_all
+        loss = loss + self.baseline_net.get_regs(x0, states_b, M[:-1])
+        return loss, z_all
 
     def _expectile_mse_loss(self, results):
         """
@@ -1656,34 +1636,9 @@ class PolicyGradient:
 
         Uses kappa-modulated asymmetric loss to implement risk-sensitive value learning.
         """
-        # Extract data
-        R = results['R']  # Shape (T, B)
-        M = results['M']  # Shape (T, B)
-
-        # Get baseline predictions
-        r_policy = results['r_policy']
-        A = results['A']
-        if self.config.get('baseline_include_state', False):
-            U = results['U']
-            baseline_inputs = torch.cat([U, r_policy, A], dim=-1)
-        else:
-            baseline_inputs = torch.cat([r_policy, A], dim=-1)
-        baseline_inputs_trimmed = baseline_inputs[:-1]
-        B_size = baseline_inputs_trimmed.shape[1]
-        x0 = self.baseline_net.x0.unsqueeze(0).expand(B_size, -1)
-
-        z_pred, states_b = self.baseline_net(
-            baseline_inputs_trimmed,
-            results['Q_b'][:-1],
-            x0
-        )
-        z_0, _ = self.baseline_net.step_0(x0)
-        if z_0.dim() == 2:
-            z_0 = z_0.squeeze(-1)
-        if z_pred.dim() == 3:
-            z_pred = z_pred.squeeze(-1)
-
-        z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)  # Shape (T, B)
+        R = results['R']
+        M = results['M']
+        z_all, states_b, x0 = self._baseline_forward(results, squeeze_scalar=True)
 
         # Compute Monte Carlo returns from each state
         with torch.no_grad():
@@ -1722,15 +1677,12 @@ class PolicyGradient:
                                     eta_plus * delta,
                                     eta_minus * delta)
 
-        # Compute loss
         if n_valid > 0:
             loss = torch.sum(delta_prime**2 * M) / n_valid
         else:
             loss = torch.tensor(0.0, device=self.device, requires_grad=True)
 
-        reg = self.baseline_net.get_regs(x0, states_b, M[:-1])
-        loss += reg
-
+        loss = loss + self.baseline_net.get_regs(x0, states_b, M[:-1])
         return loss, z_all, delta_prime
 
     def _quantile_huber_loss(self, results):
@@ -1739,36 +1691,9 @@ class PolicyGradient:
 
         Trains the baseline network to predict multiple quantiles of the return distribution.
         """
-        # Extract data
-        R = results['R']  # Shape (T, B)
-        M = results['M']  # Shape (T, B)
-
-        # Get baseline quantile predictions
-        r_policy = results['r_policy']
-        A = results['A']
-        if self.config.get('baseline_include_state', False):
-            U = results['U']
-            baseline_inputs = torch.cat([U, r_policy, A], dim=-1)
-        else:
-            baseline_inputs = torch.cat([r_policy, A], dim=-1)
-        baseline_inputs_trimmed = baseline_inputs[:-1]
-        B_size = baseline_inputs_trimmed.shape[1]
-        x0 = self.baseline_net.x0.unsqueeze(0).expand(B_size, -1)
-
-        z_pred, states_b = self.baseline_net(
-            baseline_inputs_trimmed,
-            results['Q_b'][:-1],
-            x0
-        )
-        z_0, _ = self.baseline_net.step_0(x0)
-
-        # Ensure correct shape for distributional output
-        # z_0 shape: (B, n_quantiles) or (B, 1, n_quantiles)
-        # z_pred shape: (T-1, B, n_quantiles)
-        if z_0.dim() == 3:
-            z_0 = z_0.squeeze(1)  # (B, n_quantiles)
-
-        z_all = torch.cat([z_0.unsqueeze(0), z_pred], dim=0)  # Shape (T, B, n_quantiles)
+        R = results['R']
+        M = results['M']
+        z_all, states_b, x0 = self._baseline_forward(results, squeeze_scalar=False)
 
         # Compute Monte Carlo returns from each state
         with torch.no_grad():
@@ -1944,96 +1869,84 @@ class PolicyGradient:
 
         return eta_plus.unsqueeze(0).expand_as(delta), eta_minus.unsqueeze(0).expand_as(delta)
 
+    def _compute_policy_advantage(self, results):
+        """Compute the scalar advantage used by the actor update."""
+        R = results['R']
+        M = results['M']
+        baseline = results['Z_b']
+        mode = self.config.get('advantage_mode', 'mc')
+
+        with torch.no_grad():
+            if mode == 'mc':
+                returns = self._compute_returns(R, self.gamma)
+                if self.use_distributional:
+                    return self._compute_distributional_advantage(
+                        returns,
+                        baseline,
+                        context=results.get('contexts')
+                    ) * M
+                return (returns - baseline) * M
+            if mode == 'gae':
+                return self._compute_gae(
+                    R,
+                    baseline,
+                    M,
+                    self.gamma,
+                    lam=self.config.get('gae_lambda', 0.95)
+                )
+            return self._compute_online_td_error(R, baseline, M, self.gamma)
+
+    def _policy_learning_context(self, results):
+        """Return trial-level and optional timestep-level dopamine/context signals."""
+        if self.use_rpe_modulation and 'RPE_continuous' in results:
+            rpe = results['RPE_continuous']
+            mask = results['M']
+            valid_steps = mask.sum(dim=0).clamp(min=1.0)
+            context = (rpe * mask).sum(dim=0) / valid_steps
+            self._log_rpe_learning_stats(rpe, context)
+            return context, rpe
+
+        return results.get('contexts'), None
+
+    def _log_rpe_learning_stats(self, rpe_timeseries, trial_context):
+        """Print sparse diagnostics for RPE-driven learning."""
+        if not hasattr(self, '_rpe_learning_update_count'):
+            self._rpe_learning_update_count = 0
+
+        self._rpe_learning_update_count += 1
+        if self._rpe_learning_update_count != 1 and self._rpe_learning_update_count % 100 != 0:
+            return
+
+        rpe_min = rpe_timeseries.min().item()
+        rpe_max = rpe_timeseries.max().item()
+        print(f"\n[ PolicyGradient Update #{self._rpe_learning_update_count} ] RPE Learning Modulation")
+        print(f"  Trial-averaged RPE: {trial_context.mean().item():.4f} ± {trial_context.std().item():.4f}")
+        print(f"  RPE range: [{rpe_min:.4f}, {rpe_max:.4f}]")
+        print(f"  Max D1 boost: {max(rpe_max, 0):.1%}, Max D2 boost: {max(-rpe_min, 0):.1%}")
+
+    def _modulate_policy_rates(self, rates, context_signal, context_timeseries=None, start=0):
+        """Apply either trial-constant context or timestep-specific RPE modulation."""
+        if context_timeseries is None:
+            return self._apply_opponent_modulation(rates, context_signal)
+
+        if rates.dim() == 2:
+            return self._apply_opponent_modulation(rates, context_timeseries[start])
+
+        modulated = [
+            self._apply_opponent_modulation(rates[t], context_timeseries[start + t])
+            for t in range(rates.shape[0])
+        ]
+        return torch.stack(modulated, dim=0)
+
     def _update_policy(self, results, optimizer, context_projection_optimizer=None):
-            """Update policy network using context-modulated advantages (Mechanism 1)."""
+            """Update policy network using context- or RPE-modulated advantages."""
             U = results['U']
             A = results['A']
             M = results['M']
-            R = results['R']
             Q_trimmed = results['Q'][:-1]
-            
-            # 1. Get the unbiased baseline (Critic) and Returns
-            baseline_value = results["Z_b"]  # Shape: (T, B)
-            
-            with torch.no_grad():
-                if self.config.get('advantage_mode', 'mc') == 'mc':
-                    returns = self._compute_returns(R, self.gamma)
-                    delta = returns - baseline_value
-                elif self.config.get('advantage_mode') == 'gae':
-                    delta = self._compute_gae(
-                        R, baseline_value, M, self.gamma,
-                        lam=self.config.get('gae_lambda', 0.95)
-                    )
-                else:
-                    delta = self._compute_online_td_error(R, baseline_value, M, self.gamma)
 
-
-                # # Optional, much wider safety clamp. Default off.
-                # # The old ±1 clamp was destroying TD(0) signal because TD errors on
-                # # non-reward steps are small and informative — clipping them killed
-                # # the bootstrap chain. Rely on grad_clip instead.
-                # adv_clip = self.config.get('advantage_clip', None)
-                # if adv_clip is not None:
-                #     delta = torch.clamp(delta, -adv_clip, adv_clip)
-
-                # # Optional: normalize advantages (common in PPO/A2C, very stabilizing)
-                # if self.config.get('normalize_advantages', False):
-                #     valid = M.bool()
-                #     if valid.sum() > 1:
-                #         adv_mean = delta[valid].mean()
-                #         adv_std = delta[valid].std().clamp(min=1e-6)
-                #         delta = (delta - adv_mean) / adv_std
-                #         delta = delta * M  # re-mask after normalization
-
-                # δ_t^λ = G^λ_t - V(s_t)
-                # This is the TD(λ) advantage. Mechanistically: dopamine RPE
-                # integrated over an eligibility trace.
-                # lambda_returns = self._compute_lambda_returns(R, baseline_value, M, self.gamma,
-                #                                             lam=self.config.get('td_lambda', 0.99))
-                # delta = lambda_returns - baseline_value
-
-            # 3. Determine modulation signal for learning
-            # Use continuous RPE if RPE modulation is enabled, otherwise use external context
-            if self.use_rpe_modulation and 'RPE_continuous' in results:
-                # Use the actual timestep-specific RPE that drove behavior
-                # This ensures learning matches the D1/D2 modulation that occurred during behavior
-                rpe_continuous = results['RPE_continuous']  # Shape: (T, B)
-
-                # Store for use in firing rate modulation below
-                context_signal_timeseries = rpe_continuous  # (T, B)
-
-                # For eta_plus/eta_minus computation, use trial-averaged RPE
-                valid_steps = M.sum(dim=0).clamp(min=1.0)  # (B,)
-                context_signal = (rpe_continuous * M).sum(dim=0) / valid_steps  # (B,)
-
-                use_rpe_for_learning = True
-
-                # Diagnostic: Show RPE statistics periodically
-                if not hasattr(self, '_rpe_learning_update_count'):
-                    self._rpe_learning_update_count = 0
-
-                self._rpe_learning_update_count += 1
-
-                # Print on first update and every 100 updates
-                if self._rpe_learning_update_count == 1 or self._rpe_learning_update_count % 100 == 0:
-                    rpe_mean = context_signal.mean().item()
-                    rpe_std = context_signal.std().item()
-                    rpe_min = rpe_continuous.min().item()
-                    rpe_max = rpe_continuous.max().item()
-
-                    # Calculate D1/D2 modulation strength
-                    d1_boost = max(rpe_max, 0)
-                    d2_boost = max(-rpe_min, 0)
-
-                    print(f"\n[ PolicyGradient Update #{self._rpe_learning_update_count} ] RPE Learning Modulation")
-                    print(f"  Trial-averaged RPE: {rpe_mean:.4f} ± {rpe_std:.4f}")
-                    print(f"  RPE range: [{rpe_min:.4f}, {rpe_max:.4f}]")
-                    print(f"  Max D1 boost: {d1_boost:.1%}, Max D2 boost: {d2_boost:.1%}")
-            else:
-                # Use externally provided context (legacy mode)
-                context_signal = results.get('contexts', None)
-                context_signal_timeseries = None
-                use_rpe_for_learning = False
+            delta = self._compute_policy_advantage(results)
+            context_signal, context_timeseries = self._policy_learning_context(results)
 
             if context_signal is not None:
                 eta_plus, eta_minus = self._compute_learning_etas(context_signal, delta)
@@ -2050,9 +1963,8 @@ class PolicyGradient:
             B_size = U_trimmed.shape[1]
             x0 = self.policy_net.x0.unsqueeze(0).expand(B_size, -1)
             recurrent_dopamine = None
-            if use_rpe_for_learning:
-                # Transition to state t+1 is driven by dopamine/RPE from t.
-                recurrent_dopamine = context_signal_timeseries[:-1]
+            if context_timeseries is not None:
+                recurrent_dopamine = context_timeseries[:-1]
 
             _, states = self.policy_net(
                 U_trimmed,
@@ -2067,33 +1979,24 @@ class PolicyGradient:
             else:
                 temperature = None
 
-            # Modulate firing rates with the same RPE that drove behavior
             r_0 = self.policy_net.firing_rate(x0)
-            if use_rpe_for_learning:
-                # Use RPE at t=0 for initial state
-                rpe_0 = context_signal_timeseries[0]  # (B,)
-                r_0 = self._apply_opponent_modulation(r_0, rpe_0)
-            else:
-                r_0 = self._apply_opponent_modulation(r_0, context_signal)
+            r_0 = self._modulate_policy_rates(
+                r_0,
+                context_signal,
+                context_timeseries=context_timeseries,
+                start=0
+            )
             if self.policy_dropout is not None:
                 r_0 = self.policy_dropout(r_0)
             log_z_0 = self.policy_net.log_output(r_0, temperature=temperature)
 
             r_pred = self.policy_net.firing_rate(states)
-            if use_rpe_for_learning:
-                # Use timestep-specific RPE for each state
-                # states shape: (T-1, B, N), context_signal_timeseries: (T, B)
-                rpe_timeseries = context_signal_timeseries[1:]  # (T-1, B) - skip t=0
-                # Apply modulation timestep-by-timestep
-                r_pred_modulated = []
-                for t in range(r_pred.shape[0]):
-                    r_t = r_pred[t]  # (B, N)
-                    rpe_t = rpe_timeseries[t]  # (B,)
-                    r_t_mod = self._apply_opponent_modulation(r_t, rpe_t)
-                    r_pred_modulated.append(r_t_mod)
-                r_pred = torch.stack(r_pred_modulated, dim=0)  # (T-1, B, N)
-            else:
-                r_pred = self._apply_opponent_modulation(r_pred, context_signal)
+            r_pred = self._modulate_policy_rates(
+                r_pred,
+                context_signal,
+                context_timeseries=context_timeseries,
+                start=1
+            )
             if self.policy_dropout is not None:
                 r_pred = self.policy_dropout(r_pred)
             log_z_pred = self.policy_net.log_output(r_pred, temperature=temperature)
@@ -2151,14 +2054,7 @@ class PolicyGradient:
         -------
         advantages : (T, B)
         """
-        # Collapse distributional values to scalar baseline if needed
-        if len(values.shape) == 3:
-            if self.use_quantile_mean_for_ev:
-                values = compute_expected_value_from_quantiles(
-                    values, self.tau_values, method='mean'
-                )
-            else:
-                values = values[..., values.shape[-1] // 2]
+        values = self._scalar_values(values)
 
         T, B = rewards.shape
         advantages = torch.zeros_like(rewards)
