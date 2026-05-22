@@ -66,6 +66,7 @@ def export_model_to_json(model_path, output_path):
             'kappa': float(config.get('kappa', 0.0)),
             'best_iter': int(saved_data.get('best_iter', 0)),
             'best_reward': float(saved_data.get('best_reward', 0)),
+            'dopamine_bias_max_abs': float(config.get('dopamine_bias_max_abs', 0.3)),
         },
         'weights': {
             'Win': numpy_to_list(policy_params['Win']),
@@ -83,6 +84,11 @@ def export_model_to_json(model_path, output_path):
             'dt': float(config['dt']),
         }
     }
+
+    if 'dopamine_sensitivity' in policy_params:
+        export_data['weights']['dopamine_sensitivity'] = numpy_to_list(policy_params['dopamine_sensitivity'])
+    if 'dopamine_bias' in policy_params:
+        export_data['weights']['dopamine_bias'] = numpy_to_list(policy_params['dopamine_bias'])
 
     # Save to JSON
     print(f"Saving to {output_path}...")

@@ -29,8 +29,20 @@ from pyrl import utils
 from pyrl.model import Model
 
 
-def apply_context_sampling_args(model, args):
-    """Apply command-line context sampling overrides to a model config."""
+def apply_config_overrides(model, args):
+    """Apply command-line overrides to a model config."""
+    if args.training_context_input:
+        model.config['training_context_input'] = True
+        if 'CONTEXT' not in model.config['inputs']:
+            model.config['inputs'] = dict(model.config['inputs'])
+            model.config['inputs']['CONTEXT'] = len(model.config['inputs'])
+            model.config['Nin'] = len(model.config['inputs'])
+
+    if args.opponent_modulation:
+        model.config['use_opponent_modulation'] = True
+    if args.context_decision_only:
+        model.config['context_decision_only'] = True
+
     if args.no_rpe_modulation:
         model.config['use_rpe_modulation'] = False
     if args.rpe_modulation:
@@ -51,8 +63,6 @@ def apply_context_sampling_args(model, args):
         model.config['context_gaussian_std'] = args.context_gaussian_std
     if args.vta_training_context:
         model.config['vta_training_context'] = True
-        if not args.keep_training_context_input:
-            model.config['training_context_input'] = False
     if args.vta_context_distribution is not None:
         model.config['vta_context_distribution'] = args.vta_context_distribution
     if args.vta_context_low is not None:
@@ -97,6 +107,14 @@ def apply_context_sampling_args(model, args):
         model.config['dopamine_learning_eta_min'] = args.dopamine_learning_eta_min
     if args.dopamine_learning_eta_max is not None:
         model.config['dopamine_learning_eta_max'] = args.dopamine_learning_eta_max
+    if args.actor_weight_learning_modulation:
+        model.config['actor_weight_learning_modulation'] = True
+    if args.actor_weight_learning_floor is not None:
+        model.config['actor_weight_learning_floor'] = args.actor_weight_learning_floor
+    if args.actor_weight_learning_max is not None:
+        model.config['actor_weight_learning_max'] = args.actor_weight_learning_max
+    if args.no_actor_weight_learning_normalize:
+        model.config['actor_weight_learning_normalize'] = False
     if args.baseline_activity_balance is not None:
         model.config['baseline_activity_balance'] = args.baseline_activity_balance
 
@@ -123,7 +141,7 @@ def main():
     parser.add_argument('--device', type=str, default=None,
                        help='Specific device (e.g., cuda, cuda:0, mps, cpu)')
     parser.add_argument('--kappa', type=float, default=None,
-                       help='Risk-sensitivity parameter: -1 (risk-averse) to +1 (risk-seeking)')
+                       help='Learning-asymmetry signal clipped to [-0.9, 0.9]; sign matches context/RPE signal')
     parser.add_argument('--kappa-dist', type=str, default=None, choices=['gaussian', 'uniform'],
                        help='Distribution for per-neuron kappa values (gaussian or uniform)')
     parser.add_argument('--kappa-dist-mean', type=float, default=0.0,
@@ -140,36 +158,15 @@ def main():
     parser.add_argument('--finetune-iter', type=int, default=None,
                        help='Number of iterations for fine-tuning (default: use model config)')
     parser.add_argument('--finetune-lr', type=float, default=None,
-                       help='Learning rate for fine-tuning (default: use pretrained model lr)')
+                       help='Shared learning rate for fine-tuning both networks')
+    parser.add_argument('--finetune-policy-lr', type=float, default=None,
+                       help='Policy-network learning rate for fine-tuning')
+    parser.add_argument('--finetune-baseline-lr', type=float, default=None,
+                       help='Value/baseline-network learning rate for fine-tuning')
     parser.add_argument('--grad-clip', type=float, default=None,
                        help='Gradient clipping threshold for policy network (default: no clipping)')
     parser.add_argument('--baseline-grad-clip', type=float, default=None,
                        help='Gradient clipping threshold for baseline network (default: no clipping)')
-
-    # Distributional RL level presets
-    parser.add_argument('--level', type=int, default=None, choices=[0, 1, 2, 3, 4],
-                       help='Distributional RL level preset (overrides individual flags): '
-                            '0=Original (no distributional), '
-                            '1=Distributional critic only, '
-                            '2=+Context quantile selection, '
-                            '3=+Context temperature (full), '
-                            '4=+Opponent modulation (D1/D2)')
-
-    # Individual distributional feature flags (use if --level not specified)
-    parser.add_argument('--distributional', action='store_true', default=False,
-                       help='Enable distributional critic (5-quantile value function)')
-    parser.add_argument('--context-quantile', action='store_true', default=False,
-                       help='Enable context-based quantile selection (requires --distributional)')
-    parser.add_argument('--context-temperature', action='store_true', default=False,
-                       help='Enable context-based temperature modulation (requires --distributional)')
-    parser.add_argument('--n-quantiles', type=int, default=5,
-                       help='Number of quantiles for distributional critic (default: 5)')
-    parser.add_argument('--quantile-huber-kappa', type=float, default=1.0,
-                       help='Huber loss threshold for quantile regression (default: 1.0)')
-    parser.add_argument('--temperature-base', type=float, default=1.0,
-                       help='Base softmax temperature (default: 1.0)')
-    parser.add_argument('--temperature-scale', type=float, default=0.5,
-                       help='Context scale for temperature modulation (default: 0.5)')
     parser.add_argument('--opponent-modulation', action='store_true', default=False,
                        help='Enable D1/D2 opponent modulation of policy activations')
     parser.add_argument('--context-decision-only', action='store_true', default=False,
@@ -185,6 +182,8 @@ def main():
                        help='Mean for Gaussian context c sampling')
     parser.add_argument('--context-gaussian-std', type=float, default=None,
                        help='Standard deviation for Gaussian context c sampling')
+    parser.add_argument('--training-context-input', action='store_true', default=False,
+                       help='Enable sampled direct context input and add a CONTEXT channel for new models')
     parser.add_argument('--no-rpe-modulation', action='store_true', default=False,
                        help='Disable RPE/dopamine modulation for this run')
     parser.add_argument('--rpe-modulation', action='store_true', default=False,
@@ -195,8 +194,6 @@ def main():
                        help='Clamp for dopamine/RPE signal before D1/D2 modulation')
     parser.add_argument('--vta-training-context', action='store_true', default=False,
                        help='Train with trial-constant VTA dopamine context added to natural RPE dopamine')
-    parser.add_argument('--keep-training-context-input', action='store_true', default=False,
-                       help='When using --vta-training-context, also keep the old direct context input sampling')
     parser.add_argument('--vta-context-distribution', type=str, default=None,
                        choices=['uniform', 'gaussian'],
                        help='Training-time VTA context distribution (default: model config)')
@@ -244,20 +241,16 @@ def main():
                        help='Minimum eta_plus/eta_minus after learning modulation')
     parser.add_argument('--dopamine-learning-eta-max', type=float, default=None,
                        help='Maximum eta_plus/eta_minus after learning modulation')
+    parser.add_argument('--actor-weight-learning-modulation', action='store_true', default=False,
+                       help='Enable three-factor actor learning: scale Wout gradients by current actor weight strength')
+    parser.add_argument('--actor-weight-learning-floor', type=float, default=None,
+                       help='Small weight-strength floor for actor-weight learning modulation')
+    parser.add_argument('--actor-weight-learning-max', type=float, default=None,
+                       help='Maximum gradient multiplier for actor-weight learning modulation')
+    parser.add_argument('--no-actor-weight-learning-normalize', action='store_true', default=False,
+                       help='Do not normalize actor-weight learning multipliers by their mean')
     parser.add_argument('--baseline-activity-balance', type=float, default=None,
                        help='Regularizer strength to spread baseline/value activity across neurons')
-
-    # Fixed/frozen network options
-    parser.add_argument('--fix-policy', action='store_true', default=False,
-                       help='Freeze policy network weights (train only baseline)')
-    parser.add_argument('--fix-baseline', action='store_true', default=False,
-                       help='Freeze baseline network weights (train only policy)')
-    parser.add_argument('--fix-context-projection', action='store_true', default=False,
-                       help='Freeze context projection weights (requires learned projection)')
-    parser.add_argument('--context-projection-learned', action='store_true', default=False,
-                       help='Use learned context projection instead of simple sum')
-    parser.add_argument('--context-projection-lr', type=float, default=0.001,
-                       help='Learning rate for context projection (default: 0.001)')
 
     args = parser.parse_args()
 
@@ -287,52 +280,6 @@ def main():
             device = 'cpu'
     else:
         device = 'cpu'
-
-    # Process distributional RL level presets
-    # If --level is specified, it overrides individual flags
-    if args.level is not None:
-        if args.level == 0:
-            # Level 0: Original (no distributional features)
-            distributional = False
-            context_quantile = False
-            context_temperature = False
-            opponent_modulation = False
-            print(f"Using Level {args.level}: Original (no distributional features)")
-        elif args.level == 1:
-            # Level 1: Distributional critic only
-            distributional = True
-            context_quantile = False
-            context_temperature = False
-            opponent_modulation = False
-            print(f"Using Level {args.level}: Distributional critic only")
-        elif args.level == 2:
-            # Level 2: Distributional + context quantile selection
-            distributional = False
-            context_quantile = False
-            context_temperature = False
-            opponent_modulation = False
-            print(f"Using Level {args.level}: Distributional + context quantile selection")
-        elif args.level == 3:
-            # Level 3: Full features (distributional + context quantile + temperature)
-            distributional = True
-            context_quantile = True
-            context_temperature = True
-            opponent_modulation = False
-            print(f"Using Level {args.level}: Full distributional features (all enabled)")
-        elif args.level == 4:
-            # Level 4: Full features + opponent modulation
-            distributional = False
-            context_quantile = False
-            context_temperature = False
-            opponent_modulation = True
-            print(f"Using Level {args.level}: Full features + opponent modulation")
-    else:
-        # Use individual flags
-        distributional = args.distributional
-        context_quantile = args.context_quantile
-        context_temperature = args.context_temperature
-        opponent_modulation = args.opponent_modulation
-    context_decision_only = args.context_decision_only
 
     # Process kappa distribution parameters
     kappa_dist = args.kappa_dist
@@ -403,6 +350,7 @@ def main():
     if action == 'info':
         # Display model information
         model = Model(modelfile)
+        apply_config_overrides(model, args)
         # Use config if savefile doesn't exist, otherwise load from file
         if os.path.exists(savefile):
             pg = model.get_pg(savefile, seed, dt=dt, device=device)
@@ -425,20 +373,11 @@ def main():
     elif action == 'train':
         # Train model
         model = Model(modelfile)
-        apply_context_sampling_args(model, args)
+        apply_config_overrides(model, args)
 
         recover = 'recover' in action_args
         model.train(savefile, seed, recover=recover, device=device, kappa=args.kappa,
-                   kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params,
-                   distributional=distributional,  # Use processed variable (from --level or --distributional)
-                   context_quantile=context_quantile,  # Use processed variable
-                   context_temperature=context_temperature,  # Use processed variable
-                   use_opponent_modulation=opponent_modulation,
-                   context_decision_only=context_decision_only,
-                   n_quantiles=args.n_quantiles,
-                   quantile_huber_kappa=args.quantile_huber_kappa,
-                   temperature_base=args.temperature_base,
-                   temperature_scale=args.temperature_scale)
+                   kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
 
     elif action == 'finetune':
         # Fine-tune model with new kappa value
@@ -466,11 +405,11 @@ def main():
             sys.exit(1)
 
         model = Model(modelfile)
-        if context_decision_only:
-            model.config['context_decision_only'] = True
-        apply_context_sampling_args(model, args)
+        apply_config_overrides(model, args)
         model.finetune(pretrained_file, savefile, args.kappa, seed=seed,
                       max_iter=args.finetune_iter, lr=args.finetune_lr,
+                      policy_lr=args.finetune_policy_lr,
+                      baseline_lr=args.finetune_baseline_lr,
                       grad_clip=args.grad_clip, baseline_grad_clip=args.baseline_grad_clip,
                       device=device, kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
 
@@ -496,9 +435,7 @@ def main():
 
         # Load model
         model = Model(modelfile)
-        if context_decision_only:
-            model.config['context_decision_only'] = True
-        apply_context_sampling_args(model, args)
+        apply_config_overrides(model, args)
 
         # Reset args
         action_args = action_args[1:]

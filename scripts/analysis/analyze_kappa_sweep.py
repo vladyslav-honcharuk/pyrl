@@ -239,8 +239,8 @@ def main():
 
     # All kappa values (sorted)
     kappa_step = 0.1
-    negative_kappas = [round(k, 1) for k in np.arange(-1.0, -0.0, kappa_step)]
-    positive_kappas = [0.0] + [round(k, 1) for k in np.arange(0.1, 1.0 + kappa_step/2, kappa_step)]
+    negative_kappas = [round(k, 1) for k in np.arange(-0.9, -0.0, kappa_step)]
+    positive_kappas = [0.0] + [round(k, 1) for k in np.arange(0.1, 0.9 + kappa_step/2, kappa_step)]
     all_kappas = sorted(negative_kappas + positive_kappas)
 
     print(f"{'='*80}")

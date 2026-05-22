@@ -1,5 +1,5 @@
 """
-Wrapper class for PolicyGradient to simplify model creation and training.
+Wrapper class for actor-critic model creation and training.
 """
 import importlib.util
 import os
@@ -7,7 +7,7 @@ import sys
 
 from . import configs
 from .performance import Performance2AFC
-from .policygradient import PolicyGradient
+from .actor_critic import ActorCriticTrainer
 
 
 class Struct:
@@ -20,8 +20,7 @@ class Model:
     """
     Model wrapper for cognitive task training.
 
-    This class loads task specifications and configures the PolicyGradient
-    algorithm for training recurrent neural networks.
+    This class loads task specifications and configures recurrent trainers.
     """
 
     def __init__(self, modelfile=None, **kwargs):
@@ -100,7 +99,7 @@ class Model:
     def get_pg(self, config_or_savefile, seed=1, dt=None, load='best', device=None, kappa=0.0,
                kappa_dist=None, kappa_dist_params=None):
         """
-        Get PolicyGradient instance.
+        Get trainer instance.
 
         Parameters
         ----------
@@ -115,7 +114,7 @@ class Model:
         device : str, optional
             Device to use ('cpu', 'cuda', or specific cuda device).
         kappa : float
-            Risk-sensitivity parameter (-1 to +1, default 0.0).
+            Learning-asymmetry signal clipped to [-0.9, 0.9] (default 0.0).
         kappa_dist : str, optional
             Distribution for per-neuron kappa ('gaussian', 'uniform', or None).
         kappa_dist_params : dict, optional
@@ -123,8 +122,8 @@ class Model:
 
         Returns
         -------
-        pg : PolicyGradient
-            Configured PolicyGradient instance.
+        pg : ActorCriticTrainer
+            Configured trainer instance.
         """
         # If config_or_savefile is a dict, check if it has kappa/distribution params
         if isinstance(config_or_savefile, dict):
@@ -135,15 +134,12 @@ class Model:
             if 'kappa_dist_params' in config_or_savefile:
                 kappa_dist_params = config_or_savefile['kappa_dist_params']
 
-        return PolicyGradient(self.Task, config_or_savefile, seed=seed,
-                            dt=dt, load=load, device=device, kappa=kappa,
-                            kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
+        return ActorCriticTrainer(self.Task, config_or_savefile, seed=seed,
+                                  dt=dt, load=load, device=device, kappa=kappa,
+                                  kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
 
     def train(self, savefile='savefile.pkl', seed=1, recover=False, device='mps', kappa=None,
-              kappa_dist=None, kappa_dist_params=None, distributional=False, context_quantile=False,
-              context_temperature=False, use_opponent_modulation=False, context_decision_only=False,
-              n_quantiles=5, quantile_huber_kappa=1.0, temperature_base=1.0,
-              temperature_scale=0.5):
+              kappa_dist=None, kappa_dist_params=None):
         """
         Train the network.
 
@@ -158,49 +154,15 @@ class Model:
         device : str, optional
             Device to use ('cpu', 'cuda', or specific cuda device).
         kappa : float, optional
-            Risk-sensitivity parameter (-1 to +1). If None, uses default 0.0.
+            Learning-asymmetry signal clipped to [-0.9, 0.9]. If None, uses default 0.0.
         kappa_dist : str, optional
             Distribution for per-neuron kappa ('gaussian', 'uniform', or None).
         kappa_dist_params : dict, optional
             Parameters for kappa distribution.
-        distributional : bool
-            Enable distributional critic (5-quantile value function).
-        context_quantile : bool
-            Enable context-based quantile selection.
-        context_temperature : bool
-            Enable context-based temperature modulation.
-        use_opponent_modulation : bool
-            Enable D1/D2 opponent modulation of policy activations.
-        context_decision_only : bool
-            Apply context input only during the decision period.
-        n_quantiles : int
-            Number of quantiles for distributional critic.
-        quantile_huber_kappa : float
-            Huber loss threshold for quantile regression.
-        temperature_base : float
-            Base softmax temperature.
-        temperature_scale : float
-            Context scale for temperature modulation.
         """
         # Default kappa to 0.0 if not specified
         if kappa is None:
             kappa = 0.0
-        
-        # Add distributional flags to config
-        if distributional:
-            self.config['use_distributional_critic'] = True
-            self.config['n_quantiles'] = n_quantiles
-            self.config['quantile_huber_kappa'] = quantile_huber_kappa
-            if context_quantile:
-                self.config['use_context_quantile_selection'] = True
-            if context_temperature:
-                self.config['use_context_temperature'] = True
-                self.config['temperature_base'] = temperature_base
-                self.config['temperature_context_scale'] = temperature_scale
-        if use_opponent_modulation:
-            self.config['use_opponent_modulation'] = True
-        if context_decision_only:
-            self.config['context_decision_only'] = True
 
         if recover and os.path.isfile(savefile):
             pg = self.get_pg(savefile, load='current', device=device, kappa=kappa,
@@ -220,6 +182,7 @@ class Model:
         pg.train(savefile, recover=recover)
 
     def finetune(self, pretrained_file, savefile, kappa, seed=1, max_iter=None, lr=None,
+                 policy_lr=None, baseline_lr=None,
                  grad_clip=None, baseline_grad_clip=None, device='cpu',
                  kappa_dist=None, kappa_dist_params=None):
         """
@@ -238,13 +201,17 @@ class Model:
         savefile : str
             Path to save fine-tuned model.
         kappa : float
-            New risk-sensitivity parameter (-1 to +1).
+            New learning-asymmetry signal clipped to [-0.9, 0.9].
         seed : int
             Random seed for fine-tuning.
         max_iter : int, optional
             Maximum iterations for fine-tuning. If None, uses config default.
         lr : float, optional
-            Learning rate for fine-tuning. If None, uses pretrained model's learning rate.
+            Shared learning rate for fine-tuning. If None, uses pretrained model's learning rates.
+        policy_lr : float, optional
+            Policy-network learning rate. Overrides lr for the policy network.
+        baseline_lr : float, optional
+            Value/baseline-network learning rate. Overrides lr for the baseline network.
         grad_clip : float, optional
             Gradient clipping threshold for policy network. If None, no clipping.
         baseline_grad_clip : float, optional
@@ -264,8 +231,12 @@ class Model:
         # Use saved hyperparameters (learning rates, batch size, etc.)
         # This ensures we fine-tune with the same settings as the original training
         finetune_config = self.config.copy()
-        finetune_config['lr'] = saved_config['lr'] if lr is None else lr
-        finetune_config['baseline_lr'] = saved_config['baseline_lr'] if lr is None else lr
+        if policy_lr is None:
+            policy_lr = saved_config['lr'] if lr is None else lr
+        if baseline_lr is None:
+            baseline_lr = saved_config['baseline_lr'] if lr is None else lr
+        finetune_config['lr'] = policy_lr
+        finetune_config['baseline_lr'] = baseline_lr
         finetune_config['n_gradient'] = saved_config['n_gradient']
         finetune_config['n_validation'] = saved_config['n_validation']
 
@@ -283,7 +254,7 @@ class Model:
         finetune_config['kappa_dist'] = kappa_dist
         finetune_config['kappa_dist_params'] = kappa_dist_params
 
-        # Create a PolicyGradient instance using the saved training hyperparameters
+        # Create a trainer using the saved training hyperparameters
         pg = self.get_pg(finetune_config, seed=finetune_config['seed'], device=device, kappa=kappa,
                         kappa_dist=kappa_dist, kappa_dist_params=kappa_dist_params)
 

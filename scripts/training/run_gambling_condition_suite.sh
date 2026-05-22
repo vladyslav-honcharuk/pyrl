@@ -10,10 +10,14 @@ MODEL_FILE="${1:-tasks/gambling.py}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 DATA_PROGRESS_ROOT="${DATA_PROGRESS_ROOT:-data_progress}"
 
-# Set RUN_TRAIN=0 to only regenerate plots from existing checkpoints.
+# Set RUN_TRAIN=0 to skip training.
 RUN_TRAIN="${RUN_TRAIN:-1}"
 
-# Plot actions to run after each trained checkpoint.
+# Plotting is disabled by default for model-generation runs.
+# Set RUN_PLOTS=1 to run PLOT_ACTIONS after each checkpoint.
+RUN_PLOTS="${RUN_PLOTS:-0}"
+
+# Plot actions to run after each trained checkpoint when RUN_PLOTS=1.
 # opto-sweep includes behavior, value, activity, D1/D2 pull, logits, and probability-weighting mega plots.
 # context-sweep-0p2 uses context values from -1 to +1 in 0.2 steps.
 PLOT_ACTIONS_STR="${PLOT_ACTIONS:-opto-sweep context-sweep-0p2}"
@@ -29,7 +33,7 @@ run_cmd() {
   "$@"
 }
 
-train_and_plot() {
+train_condition() {
   local label="$1"
   local suffix="$2"
   shift 2
@@ -51,13 +55,15 @@ train_and_plot() {
       train
   fi
 
-  for action in "${PLOT_ACTIONS[@]}"; do
-    run_cmd "$PYTHON_BIN" "$TRAIN_SCRIPT" "$MODEL_FILE" \
-      --data-root "$data_root" \
-      --suffix "$suffix" \
-      "${extra_args[@]}" \
-      run "$PLOT_SCRIPT" "$action"
-  done
+  if [[ "$RUN_PLOTS" == "1" ]]; then
+    for action in "${PLOT_ACTIONS[@]}"; do
+      run_cmd "$PYTHON_BIN" "$TRAIN_SCRIPT" "$MODEL_FILE" \
+        --data-root "$data_root" \
+        --suffix "$suffix" \
+        "${extra_args[@]}" \
+        run "$PLOT_SCRIPT" "$action"
+    done
+  fi
 }
 
 model_base_name() {
@@ -76,7 +82,7 @@ model_savefile() {
   printf '%s/%s/weights/%s/%s.pkl' "$ROOT_DIR" "$DATA_PROGRESS_ROOT/$label" "$name" "$name"
 }
 
-finetune_and_plot() {
+finetune_condition() {
   local label="$1"
   local suffix="$2"
   local pretrained="$3"
@@ -101,20 +107,21 @@ finetune_and_plot() {
       finetune
   fi
 
-  for action in "${PLOT_ACTIONS[@]}"; do
-    run_cmd "$PYTHON_BIN" "$TRAIN_SCRIPT" "$MODEL_FILE" \
-      --data-root "$data_root" \
-      --suffix "$suffix" \
-      "${extra_args[@]}" \
-      run "$PLOT_SCRIPT" "$action"
-  done
+  if [[ "$RUN_PLOTS" == "1" ]]; then
+    for action in "${PLOT_ACTIONS[@]}"; do
+      run_cmd "$PYTHON_BIN" "$TRAIN_SCRIPT" "$MODEL_FILE" \
+        --data-root "$data_root" \
+        --suffix "$suffix" \
+        "${extra_args[@]}" \
+        run "$PLOT_SCRIPT" "$action"
+    done
+  fi
 }
 
 # 1. Default/control model: no dopamine/RPE feedback, no kappa, no tonic VTA context.
-# train_and_plot \
-#   "default_no_dopamine_feedback" \
-#   "_suite_default" \
-#   --no-rpe-modulation
+train_condition \
+  "default_no_dopamine_feedback" \
+  "_suite_default"
 
 # 2. Hard-wired kappa models: fixed positive/negative value-learning asymmetry.
 # Override with: KAPPAS="-1.0 -0.5 0.0 0.5 1.0" ./scripts/training/run_gambling_condition_suite.sh
@@ -122,10 +129,9 @@ KAPPAS_STR="${KAPPAS:--1.0 -0.8 -0.6 -0.4 -0.2 0.0 0.2 0.4 0.6 0.8 1.0}"
 read -r -a KAPPAS <<< "$KAPPAS_STR"
 for kappa in "${KAPPAS[@]}"; do
   kappa_tag="$(kappa_tag "$kappa")"
-  train_and_plot \
+  train_condition \
     "hard_wired_kappa_${kappa}" \
     "_suite_kappa_${kappa_tag}" \
-    --no-rpe-modulation \
     --kappa "$kappa"
 done
 
@@ -138,10 +144,9 @@ read -r -a KAPPA_FINETUNE_NEGATIVE <<< "$KAPPA_FINETUNE_NEGATIVE_STR"
 
 kappa0_label="finetuned_kappa_0.0"
 kappa0_suffix="_suite_ft_kappa_0p0"
-train_and_plot \
+train_condition \
   "$kappa0_label" \
   "$kappa0_suffix" \
-  --no-rpe-modulation \
   --kappa 0.0
 
 kappa0_savefile="$(model_savefile "$kappa0_label" "$kappa0_suffix")"
@@ -150,11 +155,10 @@ for kappa in "${KAPPA_FINETUNE_POSITIVE[@]}"; do
   tag="$(kappa_tag "$kappa")"
   label="finetuned_kappa_${kappa}"
   suffix="_suite_ft_kappa_${tag}"
-  finetune_and_plot \
+  finetune_condition \
     "$label" \
     "$suffix" \
     "$previous_savefile" \
-    --no-rpe-modulation \
     --kappa "$kappa"
   previous_savefile="$(model_savefile "$label" "$suffix")"
 done
@@ -164,18 +168,17 @@ for kappa in "${KAPPA_FINETUNE_NEGATIVE[@]}"; do
   tag="$(kappa_tag "$kappa")"
   label="finetuned_kappa_${kappa}"
   suffix="_suite_ft_kappa_${tag}"
-  finetune_and_plot \
+  finetune_condition \
     "$label" \
     "$suffix" \
     "$previous_savefile" \
-    --no-rpe-modulation \
     --kappa "$kappa"
   previous_savefile="$(model_savefile "$label" "$suffix")"
 done
 
 # 4. Tonic/context dopamine: trial-constant VTA context is sampled during training,
 # but natural RPE gain is zero so this isolates tonic dopamine context.
-train_and_plot \
+train_condition \
   "tonic_context_dopamine" \
   "_suite_tonic_vta_ctx" \
   --rpe-modulation \
@@ -191,7 +194,7 @@ train_and_plot \
   --dopamine-bias-max-abs 0.7
 
 # 5. Base model with natural RPE feedback: no extra tonic context, only natural RPE-derived dopamine.
-train_and_plot \
+train_condition \
   "natural_rpe_feedback" \
   "_suite_rpe_feedback" \
   --rpe-modulation \
@@ -204,7 +207,7 @@ train_and_plot \
 
 # 6. RPE model trained with phasic dopamine range: natural RPE plus sampled tonic VTA context,
 # with linear activity and linear learning asymmetry.
-train_and_plot \
+train_condition \
   "rpe_plus_phasic_dopamine_range" \
   "_suite_rpe_phasic_range" \
   --rpe-modulation \

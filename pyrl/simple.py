@@ -61,8 +61,6 @@ class SimpleRNN(RecurrentNetwork):
         # Fixed parameters
         self._fixed_params = self.config['fix']
 
-        print(f"[ {self.network_name} ] alpha = {self.alpha}")
-        print(f"[ {self.network_name} ] L2_r = {self.config['L2_r']}")
 
         # Initialize or load parameters
         if params is None:
@@ -78,7 +76,6 @@ class SimpleRNN(RecurrentNetwork):
     def _initialize_params(self, seed):
         """Initialize network parameters."""
         rng = get_rng(seed, __name__)
-        print(f"Seed = {seed}")
 
         # Input weights
         Win = rng.normal(size=(self.Nin, self.N))
@@ -162,7 +159,20 @@ class SimpleRNN(RecurrentNetwork):
         return_logits : bool
             If True, return raw logits before softmax. Default: False.
         """
-        logits = torch.matmul(r, self.Wout) + self.bout
+        # Compute logits with opponent modulation if enabled
+        if self.config.get('use_opponent_modulation', False):
+            # Direct (D1/Go) - Indirect (D2/No-Go) opponent computation
+            # This implements the biological mechanism where D1 and D2 pathways
+            # have opponent effects on action selection through GPi
+            half_N = self.N // 2
+            d1_rates = r[..., :half_N]
+            d2_rates = r[..., half_N:]
+            d1_logits = torch.matmul(d1_rates, self.Wout[:half_N, :])
+            d2_logits = torch.matmul(d2_rates, self.Wout[half_N:, :])
+            logits = d1_logits - d2_logits + self.bout
+        else:
+            # Standard computation: all neurons contribute additively
+            logits = torch.matmul(r, self.Wout) + self.bout
 
         if return_logits:
             return logits

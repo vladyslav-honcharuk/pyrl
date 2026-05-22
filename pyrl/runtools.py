@@ -24,8 +24,8 @@ def run(action, trials, pg, scratchpath, dt_save=None):
         'trials-b' for behavior only, 'trials-a' for behavior+activity
     trials : list
         List of trial specifications
-    pg : PolicyGradient
-        PolicyGradient instance
+    pg : ActorCriticTrainer
+        Trainer instance
     scratchpath : str
         Path to save results
     dt_save : float, optional
@@ -70,6 +70,10 @@ def run(action, trials, pg, scratchpath, dt_save=None):
         # Include RPE signals if available (added in updated run_trials)
         RPE_objective = results.get('RPE_objective', None)
         RPE_subjective = results.get('RPE_subjective', None)
+        Policy_Values = results.get('Policy_Values', None)
+        Policy_D1_Pull = results.get('Policy_D1_Pull', None)
+        Policy_D2_Pull = results.get('Policy_D2_Pull', None)
+        r_policy_mod = results.get('r_policy_mod', None)
 
         for trial in trials:
             trial['time'] = trial['time'][::inc]
@@ -85,6 +89,19 @@ def run(action, trials, pg, scratchpath, dt_save=None):
             save = [trials, U[::inc], Z[::inc], Z_b[::inc], A[::inc], R[::inc],
                     M[::inc], perf, r_policy[::inc], r_value[::inc]]
             print("Warning: RPE signals not found in results (using older version?)")
+
+        if (
+            Policy_Values is not None
+            and Policy_D1_Pull is not None
+            and Policy_D2_Pull is not None
+        ):
+            save.extend([
+                Policy_Values[::inc],
+                Policy_D1_Pull[::inc],
+                Policy_D2_Pull[::inc],
+                (r_policy_mod if r_policy_mod is not None else r_policy)[::inc]
+            ])
+            print("Including policy split logits in saved data.")
     else:
         raise ValueError(action)
 

@@ -1,8 +1,9 @@
 """
-Utility functions for PyTorch policy gradient RNN training.
+Utility functions for PyTorch recurrent training.
 """
 import os
 import pickle
+import io
 import datetime
 import errno
 import signal
@@ -119,10 +120,30 @@ def save(filename, obj):
     signal.signal(signal.SIGINT, s)
 
 
-def load(filename):
-    """Load object from pickle file."""
+def load(filename, map_location='cpu'):
+    """Load object from pickle file, mapping torch tensor storage to CPU by default."""
     with open(filename, 'rb') as f:
-        return pickle.load(f)
+        try:
+            import torch
+        except ImportError:
+            return pickle.load(f)
+
+        load_from_bytes = getattr(torch.storage, '_load_from_bytes', None)
+        if load_from_bytes is None or map_location is None:
+            return pickle.load(f)
+
+        def load_from_bytes_mapped(storage_bytes):
+            return torch.load(
+                io.BytesIO(storage_bytes),
+                map_location=map_location,
+                weights_only=False
+            )
+
+        torch.storage._load_from_bytes = load_from_bytes_mapped
+        try:
+            return pickle.load(f)
+        finally:
+            torch.storage._load_from_bytes = load_from_bytes
 
 
 #=========================================================================================

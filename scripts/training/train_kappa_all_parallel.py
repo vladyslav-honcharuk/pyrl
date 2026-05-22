@@ -104,8 +104,8 @@ def main():
     n_processes = min(10, os.cpu_count() - 2) if os.cpu_count() else 4
 
     # Generate all kappa values (excluding 0)
-    positive_kappas = [round(k, 1) for k in np.arange(0.1, 1.0 + kappa_step/2, kappa_step)]
-    negative_kappas = [round(k, 1) for k in np.arange(-0.1, -1.0 - kappa_step/2, -kappa_step)]
+    positive_kappas = [round(k, 1) for k in np.arange(0.1, 0.9 + kappa_step/2, kappa_step)]
+    negative_kappas = [round(k, 1) for k in np.arange(-0.1, -0.9 - kappa_step/2, -kappa_step)]
     all_kappas = sorted(negative_kappas + positive_kappas)
 
     print(f"{'='*80}")
@@ -140,7 +140,8 @@ def main():
         print("  Training base model now...")
         
         base_cmd = [
-            'python3', TRAIN_SCRIPT, modelfile, 'train'
+            'python3', TRAIN_SCRIPT, modelfile,
+            'train'
         ]
 
         if not run_command(base_cmd, f"Training base model"):

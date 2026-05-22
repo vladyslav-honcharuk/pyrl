@@ -164,24 +164,13 @@ def regress_neurons(neural_data, delta_hh_lls, delta_evs, time_slice=slice(25, 5
     return np.array(beta_hh_ll), np.array(beta_ev)
 
 
-def compute_value_grid(trials, action_indices, Z_b_np, context_val=None):
+def compute_value_grid(trials, action_indices, Z_b_np):
     """Compute 5x5 predicted value grid from chosen options."""
     value_grid = np.zeros((5, 5))
     count_grid = np.zeros((5, 5))
 
     if Z_b_np.ndim == 3:
-        if context_val is not None:
-            # Map context [-1.0, 1.0] to quantile index [0, 4]
-            # Risk averse (-1) -> lowest quantile, Risk seeking (+1) -> highest quantile
-            idx_exact = (context_val + 1.0) / 2.0 * (Z_b_np.shape[-1] - 1)
-            idx_low = int(np.floor(idx_exact))
-            idx_high = int(np.ceil(idx_exact))
-            weight = idx_exact - idx_low
-            
-            # Interpolate between the two nearest quantiles
-            Z_b_np = Z_b_np[..., idx_low] * (1 - weight) + Z_b_np[..., idx_high] * weight
-        else:
-            Z_b_np = np.mean(Z_b_np, axis=-1)
+        Z_b_np = np.mean(Z_b_np, axis=-1)
 
     for i, trial in enumerate(trials):
         trial_actions = action_indices[:, i]
@@ -202,6 +191,125 @@ def _format_ev_label(ev):
     if abs(ev) >= 10:
         return f'{ev:g}'
     return f'{ev:.2f}'.rstrip('0').rstrip('.')
+
+
+def plot_gambling_reward_probability_design(figspath):
+    """
+    Plot the gambling task option design as reward size vs probability.
+
+    The task stores options as probability-major rows in value_vector:
+    five reward/EV levels for 10%, then five for 30%, etc. This plot
+    reconstructs the intended design directly from value_vector and colors
+    each point with the matching color_vector entry.
+    """
+    from tasks.gambling import value_vector, color_vector
+
+    os.makedirs(figspath, exist_ok=True)
+
+    probabilities = value_vector[:, 0] * 100
+    reward_ul = value_vector[:, 1] * 100
+    expected_values = value_vector[:, 0] * value_vector[:, 1] * 100
+
+    prob_levels = np.unique(probabilities)
+    ev_levels = np.array(sorted(np.unique(np.round(expected_values, 6))))
+
+    fig, ax = plt.subplots(figsize=(3.8, 3.4))
+
+    # Constant-EV curves: reward = EV / probability.
+    x_smooth = np.linspace(prob_levels.min(), prob_levels.max(), 300)
+    for ev in ev_levels:
+        y_smooth = ev / (x_smooth / 100)
+        ax.plot(x_smooth, y_smooth, color='0.75', linewidth=2.4, zorder=1)
+
+    ax.scatter(
+        probabilities,
+        reward_ul,
+        s=190,
+        c=color_vector,
+        edgecolors='none',
+        zorder=3,
+        clip_on=False,
+    )
+
+    ax.set_xlabel('Probability (%)', fontsize=18)
+    ax.set_ylabel('Reward size (µL)', fontsize=18)
+    ax.set_xlim(6, 94)
+    ax.set_ylim(0, 2700)
+    ax.set_xticks(prob_levels)
+    ax.set_xticklabels([f'{int(p)}' for p in prob_levels], fontsize=15)
+    ax.set_yticks([0, 500, 1000, 1500, 2000, 2500])
+    ax.tick_params(axis='y', labelsize=15)
+    ax.tick_params(width=3, length=5)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_linewidth(3.2)
+    ax.spines['bottom'].set_linewidth(3.2)
+
+    fig.tight_layout()
+
+    outfile = os.path.join(figspath, 'gambling_reward_probability_design.png')
+    fig.savefig(outfile, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved gambling reward-probability design plot: {outfile}")
+    return outfile
+
+
+def plot_gambling_expected_value_probability_design(figspath):
+    """
+    Plot the task option grid as expected value vs probability.
+
+    This reproduces the paper-style 5x5 color layout:
+    x-axis is HH→LL based on reward probability, y-axis is raw expected
+    value in µL, and colors come from the task color_vector.
+    """
+    from tasks.gambling import value_vector, color_vector
+
+    os.makedirs(figspath, exist_ok=True)
+
+    probabilities = value_vector[:, 0] * 100
+    prob_levels = np.unique(probabilities)
+    ev_levels = np.array([100.0, 137.5, 175.0, 212.5, 250.0])
+    expected_value_ul = np.tile(ev_levels, len(prob_levels))
+
+    fig, ax = plt.subplots(figsize=(5.0, 4.8))
+    fig.subplots_adjust(left=0.27, right=0.96, bottom=0.27, top=0.88)
+
+    ax.scatter(
+        probabilities,
+        expected_value_ul,
+        s=230,
+        c=color_vector,
+        edgecolors='none',
+        zorder=3,
+        clip_on=False,
+    )
+
+    ax.set_xlabel('HH-LL\nbased on Probability (%)', fontsize=18, labelpad=18)
+    ax.set_ylabel('Expected value (µL)', fontsize=18, labelpad=18)
+    ax.set_xlim(6, 96)
+    ax.set_ylim(86, 266)
+    ax.set_xticks(prob_levels)
+    ax.set_xticklabels([f'{int(p)}' for p in prob_levels], fontsize=16)
+    ax.set_yticks(ev_levels)
+    ax.set_yticklabels([f'{ev:.1f}' for ev in ev_levels], fontsize=16)
+    ax.text(-0.18, -0.07, 'HH', transform=ax.transAxes,
+            fontsize=18, ha='left', va='top')
+    ax.text(1.04, -0.07, 'LL', transform=ax.transAxes,
+            fontsize=18, ha='left', va='top')
+
+    ax.tick_params(width=3, length=5)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_linewidth(3.2)
+    ax.spines['bottom'].set_linewidth(3.2)
+
+    fig.text(0.08, 0.94, 'B', fontsize=34, weight='bold')
+
+    outfile = os.path.join(figspath, 'gambling_expected_value_probability_design.png')
+    fig.savefig(outfile, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved gambling expected-value probability design plot: {outfile}")
+    return outfile
 
 def compute_option_choice_frequency(trials, action_indices):
     """
@@ -579,6 +687,58 @@ def load_model_weights(modelfile):
     return Wout_policy, Wout_value
 
 
+def model_uses_dopamine_split(modelfile):
+    """Return True when first/second policy halves have dopamine/opponent meaning."""
+    try:
+        model_data = utils.load(modelfile)
+        cfg = model_data.get('config', {})
+    except Exception:
+        return False
+
+    return bool(
+        cfg.get('use_rpe_modulation', False) or
+        cfg.get('use_opponent_modulation', False) or
+        cfg.get('vta_training_context', False) or
+        cfg.get('dopamine_heterogeneous_sensitivity', False) or
+        cfg.get('dopamine_sensitivity_learned', False) or
+        cfg.get('dopamine_bias_enabled', False)
+    )
+
+
+def policy_split_labels(dopamine_split=False):
+    """Labels for the first and second halves of the policy network."""
+    if dopamine_split:
+        return {
+            'half1_short': 'D1',
+            'half2_short': 'D2',
+            'half1_row': 'Policy D1\nGo Pull',
+            'half2_row': 'Policy D2\nNoGo Pull',
+            'half1_beta': 'Policy D1\nβEV',
+            'half2_beta': 'Policy D2\nβEV',
+            'half1_weight': 'Policy D1\nOutput Weight',
+            'half2_weight': 'Policy D2\nOutput Weight',
+            'half1_title': 'D1 (Go) Pull',
+            'half2_title': 'D2 (NoGo) Pull',
+            'total_title': 'Total Subjective Value ($V=P-N$)',
+            'total_row': 'Policy Total\nV = P - N',
+        }
+
+    return {
+        'half1_short': '1st half',
+        'half2_short': '2nd half',
+        'half1_row': 'Policy units\n1st half',
+        'half2_row': 'Policy units\n2nd half',
+        'half1_beta': 'Policy 1st half\nβEV',
+        'half2_beta': 'Policy 2nd half\nβEV',
+        'half1_weight': 'Policy 1st half\nOutput Weight',
+        'half2_weight': 'Policy 2nd half\nOutput Weight',
+        'half1_title': 'Policy units 1st half',
+        'half2_title': 'Policy units 2nd half',
+        'total_title': 'Total Policy Logits',
+        'total_row': 'Policy Total\nLogits',
+    }
+
+
 def format_kappa_str(kappa):
     """Format kappa value to a filename-safe string."""
     return f"{kappa:+.1f}".replace('.', 'p').replace('-', 'neg').replace('+', 'pos')
@@ -617,31 +777,33 @@ def compute_theoretical_evs():
 
 
 def create_extended_value_colormap():
-    """Custom colormap with viridis core (0.39-1.01) and log-scaled extensions."""
+    """Custom colormap with viridis reserved for the 0.39-1.01 value range."""
     viridis = plt.cm.viridis
 
-    # Map viridis to numeric interval [0.39, 1.01]; sample a few points
-    vf = [0.0, 0.25, 0.5, 0.75, 1.0]
-    viridis_colors = [viridis(f) for f in vf]
-    viridis_positions_data = [0.39 + f * (1.01 - 0.39) for f in vf]  # -> [0.39, 0.545, 0.7, 0.855, 1.01]
-
-    # Convert to log-normalized positions for the colormap
-    # LogNorm maps [vmin=0.01, vmax=10.0] to [0, 1] via log scale
+    # LogNorm maps [vmin=0.01, vmax=10.0] to [0, 1].
     vmin_data = 0.01
     vmax_data = 10.0
     log_vmin = np.log(vmin_data)
     log_vmax = np.log(vmax_data)
-    
-    viridis_positions_log = [(np.log(p) - log_vmin) / (log_vmax - log_vmin) for p in viridis_positions_data]
-    
-    # Compute log-normalized positions for boundary colors
-    pos_0_01_log = (np.log(0.01) - log_vmin) / (log_vmax - log_vmin)  # = 0.0
-    pos_0_2_log = (np.log(0.2) - log_vmin) / (log_vmax - log_vmin)
-    pos_5_log = (np.log(5.0) - log_vmin) / (log_vmax - log_vmin)
-    pos_10_log = 1.0
-    
-    positions = [pos_0_01_log, pos_0_2_log] + viridis_positions_log + [pos_5_log, pos_10_log]
-    colors = ['#0b1e4d', '#1f3b7a'] + viridis_colors + ['#ff8c00', '#ff0000']
+
+    # Viridis is intentionally limited to the biologically relevant value
+    # band around neutral expected values. Values below that use a distinct
+    # magenta-to-blue extension so sub-neutral values remain distinguishable.
+    vf = [0.0, 0.25, 0.5, 0.75, 1.0]
+    viridis_anchors = [(0.39 + f * (1.01 - 0.39), viridis(f)) for f in vf]
+    anchors = [
+        (0.01, '#3b0f70'),
+        (0.04, '#8c2981'),
+        (0.10, '#de4968'),
+        (0.20, '#fe9f6d'),
+        (0.32, '#f6d746'),
+        *viridis_anchors,
+        (5.00, '#ff8c00'),
+        (10.0, '#ff0000'),
+    ]
+
+    positions = [(np.log(p) - log_vmin) / (log_vmax - log_vmin) for p, _ in anchors]
+    colors = [color for _, color in anchors]
 
     return LinearSegmentedColormap.from_list('value_extended', list(zip(positions, colors)))
 
@@ -711,8 +873,7 @@ def _load_comparison_data(keys, trialsfiles, modelfiles):
 
         ch = extract_choices(td['trials'], action_indices, delta_hh_lls, delta_evs)
 
-        ctx_val = key if isinstance(key, float) else None
-        value_grid = compute_value_grid(td['trials'], action_indices, Z_b_np, context_val=ctx_val)
+        value_grid = compute_value_grid(td['trials'], action_indices, Z_b_np)
 
         # --- NEW: Compute Policy Value Grids ---
         grid_V, grid_D1, grid_D2 = None, None, None
@@ -778,6 +939,22 @@ def _compute_weight_limits(all_data, baseline_data, keys):
     return policy_lim, value_lim
 
 
+def _symmetric_axis_limit(values, min_limit=0.02, pad=1.25, percentile=99):
+    """Robust symmetric axis limit for compact scatter rows."""
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return min_limit
+    limit = np.nanpercentile(np.abs(values), percentile) * pad
+    return max(float(limit), min_limit)
+
+
+def _row_colorbar_axis(fig, ax, width=0.006):
+    """Add a row colorbar axis next to the last panel."""
+    pos = ax.get_position()
+    return fig.add_axes([pos.x1 + 0.01, pos.y0, width, pos.height])
+
+
 def _plot_row_behavior(fig, gs, row, col_keys, all_data, get_title):
     """Plot Row: Behavioral heatmaps."""
     axes = []
@@ -805,8 +982,7 @@ def _plot_row_behavior(fig, gs, row, col_keys, all_data, get_title):
             ax.set_ylabel('ΔEV', fontsize=10); ax.set_xlabel('ΔHH-LL', fontsize=9)
     # Colorbar
     if im is not None:
-        pos = axes[-1].get_position()
-        cax = fig.add_axes([pos.x1 + 0.01, pos.y0, 0.01, pos.height])
+        cax = _row_colorbar_axis(fig, axes[-1])
         cbar = plt.colorbar(im, cax=cax)
         cbar.set_label('P(Right)', fontsize=9, rotation=270, labelpad=15)
         cbar.ax.tick_params(labelsize=8)
@@ -836,8 +1012,7 @@ def _plot_row_values(fig, gs, row, col_keys, all_data):
         if idx == 0:
             ax.set_ylabel('EV', fontsize=10); ax.set_xlabel('HH-LL(%)', fontsize=9)
     if im is not None:
-        pos = axes[-1].get_position()
-        cax = fig.add_axes([pos.x1 + 0.01, pos.y0, 0.01, pos.height])
+        cax = _row_colorbar_axis(fig, axes[-1])
         cbar = plt.colorbar(im, cax=cax)
         cbar.set_label('Predicted\nValue', fontsize=9, rotation=270, labelpad=15)
         cbar.ax.tick_params(labelsize=8)
@@ -852,6 +1027,14 @@ def _plot_row_regression(fig, gs, row, col_keys, all_data, network, ylabel):
     sc = None
     beta_key_hh = f'beta_hh_ll_{network}'
     beta_key_ev = f'beta_ev_{network}'
+    if network == 'value':
+        all_hh = [all_data[key][beta_key_hh] for key in col_keys if key in all_data]
+        all_ev = [all_data[key][beta_key_ev] for key in col_keys if key in all_data]
+        xlim = _symmetric_axis_limit(np.concatenate(all_hh) if all_hh else [], min_limit=0.03)
+        ylim = _symmetric_axis_limit(np.concatenate(all_ev) if all_ev else [], min_limit=0.08)
+    else:
+        xlim = 0.5
+        ylim = 0.8
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
         axes.append(ax)
@@ -866,14 +1049,13 @@ def _plot_row_regression(fig, gs, row, col_keys, all_data, network, ylabel):
                         s=20, alpha=0.6, edgecolors='none', vmin=0, vmax=len(beta_ev)-1)
         ax.axhline(0, color='black', linestyle=':', alpha=0.4, linewidth=0.8)
         ax.axvline(0, color='black', linestyle=':', alpha=0.4, linewidth=0.8)
-        ax.set_xlim([-0.5, 0.5]); ax.set_ylim([-0.8, 0.8])
-        ax.set_xticks([-0.4, 0, 0.4]); ax.set_yticks([-0.6, 0, 0.6])
+        ax.set_xlim([-xlim, xlim]); ax.set_ylim([-ylim, ylim])
+        ax.set_xticks([-xlim, 0, xlim]); ax.set_yticks([-ylim, 0, ylim])
         ax.tick_params(labelsize=8)
         if idx == 0:
             ax.set_ylabel(ylabel, fontsize=10); ax.set_xlabel('βHH-LL', fontsize=9)
     if sc is not None:
-        pos = axes[-1].get_position()
-        cax = fig.add_axes([pos.x1 + 0.01, pos.y0, 0.01, pos.height])
+        cax = _row_colorbar_axis(fig, axes[-1])
         cbar = plt.colorbar(sc, cax=cax)
         cbar.set_label('Neuron\n(sorted by βEV)', fontsize=9, rotation=270, labelpad=15)
         cbar.ax.tick_params(labelsize=8)
@@ -909,8 +1091,7 @@ def _plot_row_regression_keys(fig, gs, row, col_keys, all_data, beta_key_hh, bet
         if idx == 0:
             ax.set_ylabel(ylabel, fontsize=10); ax.set_xlabel('βHH-LL', fontsize=9)
     if sc is not None:
-        pos = axes[-1].get_position()
-        cax = fig.add_axes([pos.x1 + 0.01, pos.y0, 0.01, pos.height])
+        cax = _row_colorbar_axis(fig, axes[-1])
         cbar = plt.colorbar(sc, cax=cax)
         cbar.set_label('Neuron\n(sorted by βEV)', fontsize=9, rotation=270, labelpad=15)
         cbar.ax.tick_params(labelsize=8)
@@ -959,6 +1140,24 @@ def _plot_row_beta_vs_weights(fig, gs, row, col_keys, all_data, network, color, 
     """Plot Row: β_HH-LL vs output weights."""
     wkey = f'Wout_{network}'
     beta_key = f'beta_hh_ll_{network}'
+    if network == 'value':
+        all_betas = []
+        all_weights = []
+        for key in col_keys:
+            if key not in all_data:
+                continue
+            w = all_data[key].get(wkey)
+            if w is None:
+                continue
+            n_outputs = w.shape[1] if w.ndim > 1 else 1
+            betas = all_data[key][beta_key]
+            all_betas.extend(np.repeat(betas, n_outputs) if n_outputs > 1 else betas)
+            all_weights.extend(w.flatten())
+        xlim = _symmetric_axis_limit(all_betas, min_limit=0.03)
+        ylim = _symmetric_axis_limit(all_weights, min_limit=0.03)
+    else:
+        xlim = 0.5
+        ylim = wlim
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
         if key not in all_data:
@@ -971,13 +1170,13 @@ def _plot_row_beta_vs_weights(fig, gs, row, col_keys, all_data, network, color, 
         x_data = np.repeat(betas, n_outputs) if n_outputs > 1 else betas
         y_data = w.flatten()
         ax.scatter(x_data, y_data, s=15, alpha=0.5, color=color)
-        ax.set_xlim([-0.5, 0.5]); ax.set_ylim([-wlim, wlim])
-        ax.set_xticks([-0.4, 0, 0.4])
-        ax.set_yticks([-wlim, 0, wlim])
+        ax.set_xlim([-xlim, xlim]); ax.set_ylim([-ylim, ylim])
+        ax.set_xticks([-xlim, 0, xlim])
+        ax.set_yticks([-ylim, 0, ylim])
         ax.tick_params(labelsize=8)
         fmt = lambda t: f'{t:.3f}' if abs(t) < 0.1 else f'{t:.2f}' if abs(t) < 1 else f'{t:.1f}'
-        ax.set_xticklabels([f'{t:.1f}' for t in [-0.4, 0, 0.4]])
-        ax.set_yticklabels([fmt(t) for t in [-wlim, 0, wlim]])
+        ax.set_xticklabels([fmt(t) for t in [-xlim, 0, xlim]])
+        ax.set_yticklabels([fmt(t) for t in [-ylim, 0, ylim]])
         if idx == 0:
             ax.set_ylabel(f'{network.capitalize()}\nOutput Weight', fontsize=10)
             ax.set_xlabel('βHH-LL', fontsize=9)
@@ -1352,6 +1551,157 @@ def plot_predicted_values(trialsfile, figspath, kappa=None):
     return value_grid
 
 
+def _trial_decision_indices(trial, n_timepoints):
+    """Return saved timestep indices for a trial's decision epoch."""
+    epochs = trial.get('epochs', {})
+    decision = epochs.get('decision', range(n_timepoints))
+    indices = np.asarray(list(decision), dtype=int)
+    return indices[(indices >= 0) & (indices < n_timepoints)]
+
+
+def _choice_value_records(trialsfile):
+    """
+    Return per-trial chosen-option critic values.
+
+    Each record is (trial_index, probability, objective_ev, ev_column, critic_value).
+    The critic value is Z_b at the last valid decision-epoch timestep.
+    """
+    td = load_trial_data(trialsfile)
+    if td['format'] == 'behavior':
+        return np.empty((0, 5))
+
+    action_indices = convert_actions(td['A'])
+    z_b = to_numpy(td['Z_b'])
+    if z_b.ndim == 3:
+        z_b = np.squeeze(z_b, axis=-1) if z_b.shape[-1] == 1 else np.mean(z_b, axis=-1)
+
+    records = []
+    for trial_idx, trial in enumerate(td['trials']):
+        decision_idx = _trial_decision_indices(trial, z_b.shape[0])
+        if len(decision_idx) == 0:
+            continue
+
+        trial_actions = action_indices[decision_idx, trial_idx]
+        choice_positions = np.where((trial_actions == 1) | (trial_actions == 2))[0]
+        choice_times = decision_idx[choice_positions]
+        if len(choice_times) == 0:
+            continue
+
+        choice_t = choice_times[0]
+        choice = action_indices[choice_t, trial_idx]
+        target = trial['target_l'] if choice == 1 else trial['target_r']
+        prob = trial['prob_l'] if choice == 1 else trial['prob_r']
+        size = trial['size_l'] if choice == 1 else trial['size_r']
+        objective_ev = prob * size
+        ev_col = target % 5
+
+        decision_values = z_b[decision_idx, trial_idx]
+        if 'M' in td:
+            mask = to_numpy(td['M'])[decision_idx, trial_idx].astype(bool)
+            decision_values = decision_values[mask]
+        if len(decision_values) == 0:
+            continue
+
+        records.append((trial_idx, prob, objective_ev, ev_col, decision_values[-1]))
+
+    return np.asarray(records, dtype=float)
+
+
+def _selected_kappas_for_tuning(kappa_values):
+    """Use the full available kappa sweep."""
+    return sorted(kappa_values)
+
+
+def plot_kappa_value_tuning(kappa_values, trialsfiles, figspath, window=75):
+    """
+    Plot critic value tuning across trials and the V/P relationship.
+
+    The first panel shows the final decision critic value for every saved
+    trial. The second panel averages critic value by reward probability within
+    each objective-EV column, then averages those five probability curves.
+    """
+    selected = _selected_kappas_for_tuning(kappa_values)
+    fallback_colors = plt.cm.coolwarm(np.linspace(0.05, 0.95, max(len(selected), 1)))
+    colors = {kappa: fallback_colors[i] for i, kappa in enumerate(selected)}
+
+    records_by_kappa = {}
+    for kappa in selected:
+        if kappa not in trialsfiles:
+            continue
+        records = _choice_value_records(trialsfiles[kappa])
+        if len(records) == 0:
+            print(f"  No choice-value records for κ={kappa:+.1f}; skipping")
+            continue
+        records_by_kappa[kappa] = records
+
+    if not records_by_kappa:
+        print("No kappa value-tuning data available.")
+        return
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.8))
+    for color_i, kappa in enumerate(selected):
+        if kappa not in records_by_kappa:
+            continue
+        records = records_by_kappa[kappa]
+        order = np.argsort(records[:, 0])
+        x = records[order, 0][:20]
+        y = records[order, 4][:20]
+        color = colors.get(kappa, fallback_colors[color_i])
+        ax.plot(x, y, lw=0.9, color=color, alpha=0.85, label=f'κ={kappa:+.1f}')
+
+    ax.set_xlabel('Trials', fontsize=18)
+    ax.set_ylabel('V', fontsize=18, fontstyle='italic')
+    ax.set_title('Final Decision Critic Value Across Trials', fontsize=16)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.tick_params(labelsize=13)
+    ax.legend(frameon=False, fontsize=8, ncol=4)
+    plt.tight_layout()
+
+    savefile = os.path.join(figspath, 'kappa_value_across_trials.png')
+    plt.savefig(savefile, dpi=300, bbox_inches='tight')
+    print(f"Saved kappa value tuning over trials to {savefile}")
+    plt.close()
+
+    probs = np.array([0.1, 0.3, 0.5, 0.7, 0.9])
+    fig, ax = plt.subplots(figsize=(6.0, 5.0))
+    for color_i, kappa in enumerate(selected):
+        if kappa not in records_by_kappa:
+            continue
+        records = records_by_kappa[kappa]
+        value_by_prob_ev = np.full((5, 5), np.nan)
+        for prob_i, prob in enumerate(probs):
+            for ev_col in range(5):
+                mask = (np.isclose(records[:, 1], prob)) & (records[:, 3] == ev_col)
+                if np.any(mask):
+                    value_by_prob_ev[prob_i, ev_col] = np.nanmean(records[mask, 4])
+
+        curve = np.nanmean(value_by_prob_ev, axis=1)
+        color = colors.get(kappa, fallback_colors[color_i])
+        ax.plot(probs, curve, lw=2.2, color=color, label=f'κ={kappa:+.1f}')
+        if np.isfinite(curve).any():
+            mid_idx = np.nanargmin(np.abs(probs - 0.5))
+            ax.axhline(curve[mid_idx], color=color, lw=1.0,
+                       ls=(0, (4, 7)), alpha=0.55)
+
+    ax.axvline(0.5, color='0.7', lw=1.0, ls=(0, (5, 6)))
+    ax.set_xlim(0.0, 1.0)
+    ax.set_xticks([0.0, 0.5, 1.0])
+    ax.set_xlabel('P(reward)', fontsize=20)
+    ax.set_ylabel('V', fontsize=20, fontstyle='italic')
+    ax.set_title('Critic V/P Relationship', fontsize=16)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.tick_params(labelsize=14)
+    ax.legend(frameon=False, fontsize=8, ncol=2)
+    plt.tight_layout()
+
+    savefile = os.path.join(figspath, 'kappa_value_probability_relationship.png')
+    plt.savefig(savefile, dpi=300, bbox_inches='tight')
+    print(f"Saved kappa V/P relationship to {savefile}")
+    plt.close()
+
+
 def plot_regression_analysis(trialsfile, figspath):
     """
     Perform multiple regression analysis and plot βHH-LL vs βEV scatter plots.
@@ -1450,10 +1800,10 @@ def compute_policy_value_grids(trials, Policy_Values, Policy_D1_Pull, Policy_D2_
     return grid_V, grid_D1, grid_D2
 
 
-def plot_policy_subjective_values(trialsfile, figspath, context_val=None):
+def plot_policy_subjective_values(trialsfile, figspath, context_val=None, dopamine_split=False):
     """
-    Plots a 1x3 figure showing the D1 Pull, D2 Pull, and Total Subjective Value (V)
-    that the Policy network assigns to the 25 gambling options.
+    Plot first-half pull, second-half pull, and total policy logits for the
+    25 gambling options.
     """
     td = load_trial_data(trialsfile)
     
@@ -1465,7 +1815,8 @@ def plot_policy_subjective_values(trialsfile, figspath, context_val=None):
     )
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    titles = ['D1 (Go) Pull', 'D2 (NoGo) Pull', 'Total Subjective Value ($V=P-N$)']
+    labels = policy_split_labels(dopamine_split)
+    titles = [labels['half1_title'], labels['half2_title'], labels['total_title']]
     grids = [grid_D1, grid_D2, grid_V]
     
     max_val = np.nanmax(np.abs([grid_D1, grid_D2, grid_V]))
@@ -1496,10 +1847,10 @@ def plot_policy_subjective_values(trialsfile, figspath, context_val=None):
     plt.savefig(savefile, dpi=300, bbox_inches='tight')
     plt.close()
 
-def plot_mega_policy_subjective_values(contexts, trialsfiles, figspath):
+def plot_mega_policy_subjective_values(contexts, trialsfiles, figspath, dopamine_split=False):
     """
     Creates a 3x9 mega-plot showing the internal value representation across ALL contexts.
-    Rows: D1 Pull, D2 Pull, Total Subjective Value (V)
+    Rows: first-half pull, second-half pull, total policy logits.
     Columns: Dopamine Contexts (from Risk Averse to Risk Seeking)
     Uses a globally locked color scale so intensities are directly comparable.
     """
@@ -1532,7 +1883,8 @@ def plot_mega_policy_subjective_values(contexts, trialsfiles, figspath):
     fig = plt.figure(figsize=(3 * len(contexts) + 2, 14)) 
     gs = fig.add_gridspec(3, len(contexts), hspace=0.35, wspace=0.1)
     
-    row_labels = ['D1 (Go) Pull', 'D2 (NoGo) Pull', 'Total Subjective Value\n($V=P-N$)']
+    labels = policy_split_labels(dopamine_split)
+    row_labels = [labels['half1_title'], labels['half2_title'], labels['total_title']]
     sorted_contexts = sorted(all_grids.keys())
 
     for row in range(3):
@@ -1563,7 +1915,7 @@ def plot_mega_policy_subjective_values(contexts, trialsfiles, figspath):
                 ax.set_xlabel('Reward Probability', fontsize=14, weight='bold')
 
     # Giant colorbar on the far right
-    cbar_ax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
+    cbar_ax = fig.add_axes([0.91, 0.15, 0.005, 0.7])
     cbar = fig.colorbar(im, cax=cbar_ax)
     cbar.set_label('Logits (Preference)', rotation=270, labelpad=25, fontsize=16, weight='bold')
     cbar.ax.tick_params(labelsize=12)
@@ -1629,6 +1981,25 @@ def do(action, args, config):
     elif action == 'behavior':
         # Plot behavioral heatmap
         trialsfile = runtools.behaviorfile(config['trialspath'])
+        if not os.path.exists(trialsfile):
+            trialsfile = runtools.activityfile(config['trialspath'])
+            if not os.path.exists(trialsfile):
+                raise SystemExit(
+                    "Missing trial data. Run trials-b or trials-a before plotting behavior."
+                )
+        plot_heatmap(trialsfile, config['figspath'])
+
+    elif action == 'risk-ev-choice':
+        if len(args) > 0:
+            trialsfile = args[0]
+        else:
+            trialsfile = runtools.activityfile(config['trialspath'])
+            if not os.path.exists(trialsfile):
+                trialsfile = runtools.behaviorfile(config['trialspath'])
+
+        if not os.path.exists(trialsfile):
+            raise SystemExit(f"Missing trial data file: {trialsfile}")
+
         plot_heatmap(trialsfile, config['figspath'])
         
     elif action in ('opto-sweep', 'opto-sweep-dense'):
@@ -1745,7 +2116,11 @@ def do(action, args, config):
             else:
                 contexts = [0]
                 # -1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0
-            
+
+            start_context = float(args[0]) if len(args) > 0 else None
+            if start_context is not None:
+                contexts = [ctx for ctx in contexts if ctx >= start_context - 1e-9]
+	            
             print("\n" + "="*80)
             print(f"STARTING CONTEXT SWEEP: {contexts}")
             print("="*80)
@@ -1758,15 +2133,23 @@ def do(action, args, config):
             
             # 3. Loop through contexts, run inference, and save data
             for ctx in contexts:
+                ctx_str = format_context_str(ctx)
+                os.makedirs(config['trialspath'], exist_ok=True)
+                filepath = os.path.join(config['trialspath'], f'trials_activity_ctx{ctx_str}.pkl')
+                if os.path.exists(filepath):
+                    print(f"\nSkipping Context = {ctx:+.2f}; using existing {filepath}")
+                    trialsfiles[ctx] = filepath
+                    continue
+
                 print(f"\nProcessing Context = {ctx:+.2f}...")
-                
+	                
                 pg.rng = np.random.RandomState(seed=999) # Prevent sequence memorization
                 trials_per_condition = 2
                 # NEW CODE - STRUCTURED PSYCHOMETRIC TRIALS
                 task = model.Task()
 
                 # Generate psychometric trial set (matched-EV comparisons)
-                psychometric_specs = generate_psychometric_trial_set(trials_per_comparison=10)
+                psychometric_specs = generate_psychometric_trial_set(trials_per_comparison=2)
                 pg.rng.shuffle(psychometric_specs)  # Randomize order
 
                 trials = []
@@ -1793,15 +2176,6 @@ def do(action, args, config):
                     results.get('r_policy_mod', results['r_policy'])
                 ])
                 
-                # Save file specifically for this context
-                ctx_str = format_context_str(ctx)
-                
-                # Ensure the directory exists
-                os.makedirs(config['trialspath'], exist_ok=True)
-                
-                # Construct the proper file path inside the directory
-                filepath = os.path.join(config['trialspath'], f'trials_activity_ctx{ctx_str}.pkl')
-                
                 utils.save(filepath, packed)
                 trialsfiles[ctx] = filepath
 
@@ -1817,9 +2191,19 @@ def do(action, args, config):
             print("\nGenerating Policy Subjective Value Plots...")
             for ctx in contexts:
                 filepath = trialsfiles[ctx]
-                plot_policy_subjective_values(filepath, config['figspath'], context_val=ctx)
+                plot_policy_subjective_values(
+                    filepath,
+                    config['figspath'],
+                    context_val=ctx,
+                    dopamine_split=model_uses_dopamine_split(config['savefile'])
+                )
 
-            plot_mega_policy_subjective_values(contexts, trialsfiles, config['figspath'])
+            plot_mega_policy_subjective_values(
+                contexts,
+                trialsfiles,
+                config['figspath'],
+                dopamine_split=model_uses_dopamine_split(config['savefile'])
+            )
             plot_context_choice_probability_curves(contexts, trialsfiles, config['figspath'])
             plot_context_choice_probability_mega(contexts, trialsfiles, config['figspath'])
 
@@ -1843,70 +2227,12 @@ def do(action, args, config):
             plot_context_choice_probability_curves(contexts, trialsfiles, config['figspath'])
             plot_context_choice_probability_mega(contexts, trialsfiles, config['figspath'])
 
-    elif action == 'probe-policy':
-            print("\n" + "="*80)
-            print("🧠 DIRECT POLICY PROBE: LOGITS VS TEMPERATURE")
-            print("="*80)
-
-            model = config['model']
-            pg = model.get_pg(config['savefile'], config['seed'], config['dt'])
-
-            # Create one specific trial: Left = Safe (90%, small), Right = Risky (10%, large)
-            # target_l = 20 (90% prob), target_r = 0 (10% prob)
-            pg.rng = np.random.RandomState(seed=42)
-            task = model.Task()
-            base_trial = task.get_condition(pg.rng, pg.dt, {'target_l': 20, 'target_r': 0})
-
-            print(f"Targeting Trial: Left = Safe ({base_trial['prob_l']*100:.0f}%), Right = Risky ({base_trial['prob_r']*100:.0f}%)")
-            print(f"{'Context':<9} | {'Raw Logits (Fix, Left, Right)':<35} | {'Temp':<5} | {'Final Probs (Fix, Left, Right)':<35}")
-            print("-" * 95)
-
-            contexts = [-1.0, -0.5, 0.0, 0.5, 1.0]
-
-            for ctx in contexts:
-                # 1. ABSOLUTELY FREEZE ALL NOISE
-                # This ensures recurrent noise and visual noise are mathematically identical every loop
-                pg.rng = np.random.RandomState(seed=100)
-                torch.manual_seed(100)
-
-                # 2. Run the trial
-                trial = dict(base_trial)
-                results = pg.run_trials([trial], return_states=True, context_input=ctx)
-
-                # 3. Find the exact timestep before the choice was made
-                M = results['M'][:, 0].cpu().numpy()
-                last_t = int(np.sum(M)) - 1
-
-                # 4. Extract the GRU's raw firing rate at that exact timestep
-                r_t = results['r_policy'][last_t, 0]
-
-                # 5. Extract the RAW Logits (what the GRU actually "thinks")
-                logits = pg.policy_net.output_layer(r_t.unsqueeze(0), temperature=1.0, return_logits=True).squeeze()
-
-                # 6. Extract the Temperature and final Probabilities
-                if pg.use_context_temperature:
-                    temp_tensor = pg._compute_temperature(1, context=torch.tensor([ctx], device=pg.device))
-                    temp = temp_tensor.item()
-                else:
-                    temp = 1.0
-
-                probs = torch.softmax(logits / temp, dim=-1).squeeze().detach().cpu().numpy()
-                logits_np = logits.detach().cpu().numpy()
-
-                # Format printing
-                log_str = f"[{logits_np[0]:>6.2f}, {logits_np[1]:>6.2f}, {logits_np[2]:>6.2f}]"
-                prob_str = f"[{probs[0]:>5.1%}, {probs[1]:>5.1%}, {probs[2]:>5.1%}]"
-
-                print(f"{ctx:>+9.2f} | {log_str:<35} | {temp:>4.2f} | {prob_str:<35}")
-                
-            print("="*80 + "\n")
-
     elif action == 'mega-comparison':
         # Define all kappa values
         kappas = [
-            -1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1,
+            -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1,
             0.0,
-            0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0
+            0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9
         ]
 
         # Get base name from config
@@ -1958,7 +2284,7 @@ def do(action, args, config):
         if len(trialsfiles) < 2:
             print(f"\n❌ Only found {len(trialsfiles)} trial files, need at least 2")
             print(f"\n💡 You need to run 'trials-a' action for each kappa model first!")
-            print(f"   Example: python3 scripts/training/train.py tasks/gambling.py --suffix neg0p8 run scripts/plotting/gambling.py trials-a 5")
+            print(f"   Example: python3 scripts/training/train.py tasks/gambling.py --suffix neg0p8 run scripts/plotting/gambling.py trials-a 2")
             return
 
         # Extract kappa values for which we found files (in order)
@@ -1966,6 +2292,139 @@ def do(action, args, config):
 
         print(f"\n🎨 Generating mega-comparison plot with {len(kappa_values)} models...")
         plot_mega_comparison(kappa_values, trialsfiles, modelfiles, config['figspath'])
+
+    elif action == 'finetuned-kappa-mega':
+        kappas = [
+            -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1,
+            0.0,
+            0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9
+        ]
+
+        def tag_for_kappa(kappa):
+            return f"{kappa:+.1f}".replace('+', '').replace('-', 'neg').replace('.', 'p')
+
+        data_root = os.path.dirname(os.path.dirname(os.path.dirname(config['trialspath'])))
+
+        print("\n" + "="*80)
+        print("FINETUNED KAPPA MEGA-COMPARISON")
+        print("="*80)
+        print(f"Data root: {data_root}")
+
+        trialsfiles = {}
+        modelfiles = {}
+        for kappa in kappas:
+            tag = tag_for_kappa(kappa)
+            group = f"finetuned_kappa_{kappa:.1f}"
+            name = f"gambling_ft_kappa_{tag}"
+            trialsfile = os.path.join(data_root, group, 'trials', name, 'trials_activity.pkl')
+            modelfile = os.path.join(data_root, group, 'weights', name, f'{name}.pkl')
+
+            if os.path.exists(trialsfile) and os.path.exists(modelfile):
+                trialsfiles[kappa] = trialsfile
+                modelfiles[kappa] = modelfile
+                print(f"  ✓ κ={kappa:+.1f}: {name}")
+            else:
+                print(f"  ✗ κ={kappa:+.1f}: missing")
+                if not os.path.exists(trialsfile):
+                    print(f"     missing trials: {trialsfile}")
+                if not os.path.exists(modelfile):
+                    print(f"     missing model:  {modelfile}")
+
+        kappa_values = [k for k in kappas if k in trialsfiles]
+        if len(kappa_values) < 2:
+            raise SystemExit(f"Need at least 2 finetuned kappa trial files, found {len(kappa_values)}.")
+
+        plot_mega_comparison(
+            kappa_values,
+            trialsfiles,
+            modelfiles,
+            config['figspath'],
+            plot_title='Finetuned Kappa Comparison'
+        )
+        plot_kappa_comparison(kappa_values, trialsfiles, config['figspath'])
+        plot_kappa_summary(kappa_values, trialsfiles, config['figspath'])
+        plot_kappa_value_tuning(kappa_values, trialsfiles, config['figspath'])
+
+    elif action == 'hardwired-kappa-mega':
+        kappas = [
+            -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1,
+            0.0,
+            0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9
+        ]
+
+        def tag_for_kappa(kappa):
+            return f"{kappa:+.1f}".replace('+', '').replace('-', 'neg').replace('.', 'p')
+
+        data_root = os.path.dirname(os.path.dirname(os.path.dirname(config['trialspath'])))
+
+        print("\n" + "="*80)
+        print("HARDWIRED KAPPA MEGA-COMPARISON")
+        print("="*80)
+        print(f"Data root: {data_root}")
+
+        trialsfiles = {}
+        modelfiles = {}
+        for kappa in kappas:
+            tag = tag_for_kappa(kappa)
+            group = f"hardwired_kappa_{kappa:.1f}"
+            name = f"gambling_hardwired_kappa_{tag}"
+            trialsfile = os.path.join(data_root, group, 'trials', name, 'trials_activity.pkl')
+            modelfile = os.path.join(data_root, group, 'weights', name, f'{name}.pkl')
+
+            if os.path.exists(trialsfile) and os.path.exists(modelfile):
+                trialsfiles[kappa] = trialsfile
+                modelfiles[kappa] = modelfile
+                print(f"  ✓ κ={kappa:+.1f}: {name}")
+            else:
+                print(f"  ✗ κ={kappa:+.1f}: missing")
+                if not os.path.exists(trialsfile):
+                    print(f"     missing trials: {trialsfile}")
+                if not os.path.exists(modelfile):
+                    print(f"     missing model:  {modelfile}")
+
+        kappa_values = [k for k in kappas if k in trialsfiles]
+        if len(kappa_values) < 2:
+            raise SystemExit(f"Need at least 2 hardwired kappa trial files, found {len(kappa_values)}.")
+
+        plot_mega_comparison(
+            kappa_values,
+            trialsfiles,
+            modelfiles,
+            config['figspath'],
+            plot_title='Hardwired Kappa Comparison'
+        )
+        plot_kappa_comparison(kappa_values, trialsfiles, config['figspath'])
+        plot_kappa_summary(kappa_values, trialsfiles, config['figspath'])
+        plot_kappa_value_tuning(kappa_values, trialsfiles, config['figspath'])
+
+    elif action == 'finetuned-kappa-value-tuning':
+        kappas = [
+            -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1,
+            0.0,
+            0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9
+        ]
+
+        def tag_for_kappa(kappa):
+            return f"{kappa:+.1f}".replace('+', '').replace('-', 'neg').replace('.', 'p')
+
+        data_root = os.path.dirname(os.path.dirname(os.path.dirname(config['trialspath'])))
+        trialsfiles = {}
+        for kappa in kappas:
+            tag = tag_for_kappa(kappa)
+            group = f"finetuned_kappa_{kappa:.1f}"
+            name = f"gambling_ft_kappa_{tag}"
+            trialsfile = os.path.join(data_root, group, 'trials', name, 'trials_activity.pkl')
+            if os.path.exists(trialsfile):
+                trialsfiles[kappa] = trialsfile
+                print(f"  ✓ κ={kappa:+.1f}: {name}")
+            else:
+                print(f"  ✗ κ={kappa:+.1f}: missing trials")
+
+        kappa_values = [k for k in kappas if k in trialsfiles]
+        if len(kappa_values) < 2:
+            raise SystemExit(f"Need at least 2 finetuned kappa trial files, found {len(kappa_values)}.")
+
+        plot_kappa_value_tuning(kappa_values, trialsfiles, config['figspath'])
 
     elif action == 'distribution-comparison':
         # Compare 4 models with different per-neuron kappa distributions:
@@ -2152,6 +2611,7 @@ def do(action, args, config):
             print(f"\nKappa sweep: {kappa_values}")
 
             trialsfiles = {}
+            modelfiles = {}
 
             # Load base config
             model = config['model']
@@ -2194,16 +2654,35 @@ def do(action, args, config):
                 kappa_trialspath = config['trialspath'].replace('trials', f'trials_kappa{kappa_str}')
                 os.makedirs(os.path.dirname(kappa_trialspath), exist_ok=True)
 
-                runtools.run('trials-b', trials, pg, kappa_trialspath, dt_save=config['dt-save'])
+                results = pg.run_trials(trials, return_states=True)
+                packed = [
+                    trials, results['U'], results['Z'], results['Z_b'],
+                    results['A'], results['R'], results['M'], results['perf'],
+                    results['r_policy'], results['r_value']
+                ]
+                if 'RPE_objective' in results:
+                    packed.extend([results['RPE_objective'], results['RPE_subjective']])
+                packed.extend([
+                    results['Policy_Values'],
+                    results['Policy_D1_Pull'],
+                    results['Policy_D2_Pull'],
+                    results.get('r_policy_mod', results['r_policy'])
+                ])
+
+                os.makedirs(kappa_trialspath, exist_ok=True)
+                activity_file = os.path.join(kappa_trialspath, 'trials_activity.pkl')
+                utils.save(activity_file, packed)
 
                 # Store path
-                trialsfiles[kappa] = runtools.behaviorfile(kappa_trialspath)
+                trialsfiles[kappa] = activity_file
+                modelfiles[kappa] = kappa_savefile
 
             # Create comparison plots
             print(f"\n{'='*60}")
             print("Generating comparison plots...")
             print('='*60)
 
+            plot_mega_comparison(list(kappa_values), trialsfiles, modelfiles, config['figspath'])
             plot_kappa_comparison(list(kappa_values), trialsfiles, config['figspath'])
             plot_kappa_summary(list(kappa_values), trialsfiles, config['figspath'])
 
@@ -2215,6 +2694,67 @@ def do(action, args, config):
             traceback.print_exc()
             print("\nUsage: kappa-sweep [kappa_min] [kappa_max] [n_kappas]")
             print("Example: kappa-sweep -0.8 0.8 9")
+
+    elif action == 'kappa-single':
+        # Generate a kappa-style mega plot for the current checkpoint only.
+        try:
+            kappa = float(args[0]) if len(args) > 0 else float(config.get('kappa', 0.0) or 0.0)
+            trials_per_condition = int(args[1]) if len(args) > 1 else 2
+
+            print(f"\nKappa single-condition plot: κ={kappa:+.2f}")
+
+            model = config['model']
+            pg = model.get_pg(config['savefile'], config['seed'], config['dt'], kappa=kappa)
+            pg.rng = np.random.RandomState(seed=999)
+
+            task = model.Task()
+            conditions = []
+            for _ in range(trials_per_condition):
+                for target_l in range(25):
+                    for target_r in range(25):
+                        conditions.append((target_l, target_r))
+            pg.rng.shuffle(conditions)
+
+            trials = [
+                task.get_condition(pg.rng, pg.dt, {'target_l': target_l, 'target_r': target_r})
+                for target_l, target_r in conditions
+            ]
+
+            results = pg.run_trials(trials, return_states=True)
+            packed = [
+                trials, results['U'], results['Z'], results['Z_b'],
+                results['A'], results['R'], results['M'], results['perf'],
+                results['r_policy'], results['r_value']
+            ]
+            if 'RPE_objective' in results:
+                packed.extend([results['RPE_objective'], results['RPE_subjective']])
+            packed.extend([
+                results['Policy_Values'],
+                results['Policy_D1_Pull'],
+                results['Policy_D2_Pull'],
+                results.get('r_policy_mod', results['r_policy'])
+            ])
+
+            os.makedirs(config['trialspath'], exist_ok=True)
+            activity_file = os.path.join(config['trialspath'], 'trials_activity_kappa_single.pkl')
+            utils.save(activity_file, packed)
+
+            plot_mega_comparison(
+                [kappa],
+                {kappa: activity_file},
+                {kappa: config['savefile']},
+                config['figspath'],
+                plot_title='Single Kappa Condition'
+            )
+
+            print("\nKappa single-condition plot complete!")
+
+        except Exception as e:
+            print(f"Error in kappa-single: {e}")
+            import traceback
+            traceback.print_exc()
+            print("\nUsage: kappa-single [kappa] [trials_per_condition]")
+            print("Example: kappa-single 0.0 2")
 
     elif action == 'context-sweep-gaussian':
         # Run context sweep with Gaussian sampling around each context mean
@@ -2304,7 +2844,12 @@ def do(action, args, config):
             print(f"{'='*70}")
 
             plot_context_mega_comparison(list(contexts), trialsfiles, config['savefile'], config['figspath'])
-            plot_mega_policy_subjective_values(list(contexts), trialsfiles, config['figspath'])
+            plot_mega_policy_subjective_values(
+                list(contexts),
+                trialsfiles,
+                config['figspath'],
+                dopamine_split=model_uses_dopamine_split(config['savefile'])
+            )
             plot_context_choice_probability_curves(list(contexts), trialsfiles, config['figspath'])
             plot_context_choice_probability_mega(list(contexts), trialsfiles, config['figspath'])
 
@@ -2325,9 +2870,12 @@ def do(action, args, config):
         print("  trials-b                - Generate trial data (behavior only)")
         print("  trials-a                - Generate trial data with neural activity")
         print("  behavior                - Plot behavioral heatmap")
+        print("  risk-ev-choice          - Plot behavioral proportion by ΔHH-LL and ΔEV")
         print("  neural-analysis         - Complete neural activity analysis (requires trials-a)")
         print("  kappa-comparison        - Compare multiple kappa values")
         print("  kappa-sweep             - Automated sweep across kappa values")
+        print("  kappa-single            - Current-checkpoint kappa-style plot for one condition")
+        print("  finetuned-kappa-value-tuning - Plot critic V over trials and V/P curves")
         print("  context-sweep           - Context sweep with FIXED context values")
         print("  context-sweep-gaussian  - Context sweep with GAUSSIAN sampling around each mean")
 
@@ -2604,54 +3152,111 @@ def plot_temporal_activity_sorted(trialsfile, figspath, network='value', n_examp
         'delta_evs_sorted': delta_evs_sorted
     }
 
-def plot_mega_comparison(kappa_values, trialsfiles, modelfiles, figspath, plot_title=None):
+def plot_mega_comparison(kappa_values, trialsfiles, modelfiles, figspath, plot_title=None, horizontal=False):
     """
-    Create 8×9 mega-plot comparing all kappa values.
+    Create mega-plot comparing kappa values.
+
+    Parameters
+    ----------
+    horizontal : bool
+        If True, create horizontal layout (11 columns × n_kappas rows) for single condition plots.
+        If False, create vertical layout (11 rows × n_kappas columns) for multi-condition plots.
     """
-    print("\nCREATING MEGA-PLOT: 8 ROWS × 9 KAPPA VALUES\n")
+    kappa_values = list(kappa_values)
+    n_kappas = len(kappa_values)
 
-    expected_kappas = [-0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8]
-    n_kappas = len(expected_kappas)
+    # For single condition, use horizontal layout by default
+    if n_kappas == 1 and not horizontal:
+        horizontal = True
 
-    all_data, baseline_data = _load_comparison_data(expected_kappas, trialsfiles, modelfiles)
+    if horizontal:
+        print(f"\nCREATING MEGA-PLOT (HORIZONTAL): {n_kappas} ROWS × 11 COLUMNS\n")
+    else:
+        print(f"\nCREATING MEGA-PLOT (VERTICAL): 11 ROWS × {n_kappas} COLUMNS\n")
+
+    labels = policy_split_labels(
+        any(model_uses_dopamine_split(path) for path in modelfiles.values())
+    )
+
+    all_data, baseline_data = _load_comparison_data(kappa_values, trialsfiles, modelfiles)
 
     if baseline_data is None:
-        print("Error: No baseline (κ=0) data found!")
-        return
+        first_available = next(iter(all_data.values()), None)
+        if first_available is None:
+            print("Error: No kappa data found!")
+            return
+        baseline_data = first_available
+        print("Warning: No κ=0 baseline found; using first available condition as weight baseline.")
 
-    policy_lim, value_lim = _compute_weight_limits(all_data, baseline_data, expected_kappas)
+    policy_lim, value_lim = _compute_weight_limits(all_data, baseline_data, kappa_values)
 
-    fig = plt.figure(figsize=(27, 24))
-    gs = fig.add_gridspec(8, n_kappas, hspace=0.35, wspace=0.25)
+    grid_max_vals = []
+    for kappa in kappa_values:
+        if kappa in all_data and all_data[kappa].get('grid_V') is not None:
+            grid_max_vals.extend([
+                np.nanmax(np.abs(all_data[kappa]['grid_D1'])),
+                np.nanmax(np.abs(all_data[kappa]['grid_D2'])),
+                np.nanmax(np.abs(all_data[kappa]['grid_V']))
+            ])
+    global_grid_max = max(grid_max_vals) if grid_max_vals else 1.0
+
+    if horizontal:
+        # Horizontal layout: n_kappas rows × 11 columns
+        fig = plt.figure(figsize=(33, 3 * n_kappas))
+        gs_base = fig.add_gridspec(n_kappas, 11, hspace=0.25, wspace=0.35)
+
+        # Create a transposed gridspec wrapper
+        class TransposedGridSpec:
+            def __init__(self, gs):
+                self._gs = gs
+            def __getitem__(self, key):
+                # Swap row and col: gs[row, col] becomes gs_base[col, row]
+                if isinstance(key, tuple) and len(key) == 2:
+                    row, col = key
+                    return self._gs[col, row]
+                return self._gs[key]
+
+        gs = TransposedGridSpec(gs_base)
+    else:
+        # Vertical layout: 11 rows × n_kappas columns
+        fig = plt.figure(figsize=(3 * n_kappas, 33))
+        gs = fig.add_gridspec(11, n_kappas, hspace=0.35, wspace=0.25)
 
     def get_title(kappa):
         return f'κ={kappa:+.1f}'
 
+    # Now use the same plotting code for both layouts (gridspec handles transposition)
     # Row 0: Behavioral heatmaps
-    _plot_row_behavior(fig, gs, 0, expected_kappas, all_data, get_title)
+    _plot_row_behavior(fig, gs, 0, kappa_values, all_data, get_title)
     # Row 1: Predicted values
-    _plot_row_values(fig, gs, 1, expected_kappas, all_data)
+    _plot_row_values(fig, gs, 1, kappa_values, all_data)
     # Row 2: Policy regression
-    _plot_row_regression(fig, gs, 2, expected_kappas, all_data, 'policy', 'Policy\nβEV')
+    _plot_row_regression(fig, gs, 2, kappa_values, all_data, 'policy', 'Policy\nβEV')
     # Row 3: Value regression
-    _plot_row_regression(fig, gs, 3, expected_kappas, all_data, 'value', 'Value\nβEV')
+    _plot_row_regression(fig, gs, 3, kappa_values, all_data, 'value', 'Value\nβEV')
     # Row 4: Policy output weights
-    _plot_row_weights(fig, gs, 4, expected_kappas, all_data, baseline_data,
+    _plot_row_weights(fig, gs, 4, kappa_values, all_data, baseline_data,
                       'policy', 'red', policy_lim, 'Policy\nOutput Weight',
                       'Policy Output Weight (κ=0)')
     # Row 5: Value output weights
-    _plot_row_weights(fig, gs, 5, expected_kappas, all_data, baseline_data,
+    _plot_row_weights(fig, gs, 5, kappa_values, all_data, baseline_data,
                       'value', 'blue', value_lim, 'Value\nOutput Weight',
                       'Value Output Weight (κ=0)')
     # Row 6: Policy β vs weights
-    _plot_row_beta_vs_weights(fig, gs, 6, expected_kappas, all_data, 'policy', 'red', policy_lim)
+    _plot_row_beta_vs_weights(fig, gs, 6, kappa_values, all_data, 'policy', 'red', policy_lim)
     # Row 7: Value β vs weights
-    _plot_row_beta_vs_weights(fig, gs, 7, expected_kappas, all_data, 'value', 'blue', value_lim)
+    _plot_row_beta_vs_weights(fig, gs, 7, kappa_values, all_data, 'value', 'blue', value_lim)
+    # Rows 8-10: Policy half-split contributions and total logits.
+    _plot_row_policy_grids(fig, gs, 8, kappa_values, all_data, 'grid_D1', labels['half1_row'], global_grid_max)
+    _plot_row_policy_grids(fig, gs, 9, kappa_values, all_data, 'grid_D2', labels['half2_row'], global_grid_max)
+    _plot_row_policy_grids(fig, gs, 10, kappa_values, all_data, 'grid_V', labels['total_row'], global_grid_max)
 
     plt.tight_layout(rect=[0, 0, 1, 1])
 
     if plot_title == 'Neuromodulation Comparison':
         savefile = os.path.join(figspath, 'mega_comparison_neuromodulation.png')
+    elif plot_title == 'Single Kappa Condition':
+        savefile = os.path.join(figspath, 'kappa_single_condition.png')
     else:
         savefile = os.path.join(figspath, 'mega_comparison_all_kappas.png')
 
@@ -2964,6 +3569,7 @@ def plot_context_mega_comparison(contexts, trialsfiles, modelfile, figspath):
     biological subjective values across context values.
     """
     print(f"\nCREATING MEGA-PLOT: 11 ROWS × {len(contexts)} CONTEXT VALUES\n")
+    labels = policy_split_labels(model_uses_dopamine_split(modelfile))
 
     # =====================================================================
     # 🔍 DIAGNOSTIC BLOCK
@@ -3000,9 +3606,9 @@ def plot_context_mega_comparison(contexts, trialsfiles, modelfile, figspath):
             w_d1 = Wout_policy[:half_N]
             w_d2 = Wout_policy[half_N:]
             print("\nPolicy Output Weight Balance:")
-            print(f"  D1 abs mean/std/norm: {np.mean(np.abs(w_d1)):.6f} / {np.std(w_d1):.6f} / {np.linalg.norm(w_d1):.6f}")
-            print(f"  D2 abs mean/std/norm: {np.mean(np.abs(w_d2)):.6f} / {np.std(w_d2):.6f} / {np.linalg.norm(w_d2):.6f}")
-            print(f"  D2/D1 norm ratio:     {np.linalg.norm(w_d2) / max(np.linalg.norm(w_d1), 1e-12):.6f}")
+            print(f"  {labels['half1_short']} abs mean/std/norm: {np.mean(np.abs(w_d1)):.6f} / {np.std(w_d1):.6f} / {np.linalg.norm(w_d1):.6f}")
+            print(f"  {labels['half2_short']} abs mean/std/norm: {np.mean(np.abs(w_d2)):.6f} / {np.std(w_d2):.6f} / {np.linalg.norm(w_d2):.6f}")
+            print(f"  {labels['half2_short']}/{labels['half1_short']} norm ratio:     {np.linalg.norm(w_d2) / max(np.linalg.norm(w_d1), 1e-12):.6f}")
 
         for pname, label in [
             ('dopamine_sensitivity', 'Dopamine Sensitivity'),
@@ -3014,9 +3620,9 @@ def plot_context_mega_comparison(contexts, trialsfiles, modelfile, figspath):
                 d1 = arr[:half_N]
                 d2 = arr[half_N:]
                 print(f"\n{label} Balance:")
-                print(f"  D1 mean/std/absmean: {np.mean(d1):+.6f} / {np.std(d1):.6f} / {np.mean(np.abs(d1)):.6f}")
-                print(f"  D2 mean/std/absmean: {np.mean(d2):+.6f} / {np.std(d2):.6f} / {np.mean(np.abs(d2)):.6f}")
-                print(f"  D2/D1 absmean ratio: {np.mean(np.abs(d2)) / max(np.mean(np.abs(d1)), 1e-12):.6f}")
+                print(f"  {labels['half1_short']} mean/std/absmean: {np.mean(d1):+.6f} / {np.std(d1):.6f} / {np.mean(np.abs(d1)):.6f}")
+                print(f"  {labels['half2_short']} mean/std/absmean: {np.mean(d2):+.6f} / {np.std(d2):.6f} / {np.mean(np.abs(d2)):.6f}")
+                print(f"  {labels['half2_short']}/{labels['half1_short']} absmean ratio: {np.mean(np.abs(d2)) / max(np.mean(np.abs(d1)), 1e-12):.6f}")
     except Exception as e:
         print(f"Could not load model weights for diagnostics: {e}")
 
@@ -3040,8 +3646,8 @@ def plot_context_mega_comparison(contexts, trialsfiles, modelfile, figspath):
         print(f"\nValue Grid Difference (ctx = -1.0 vs ctx = +1.0):")
         print(f"  Mean absolute difference: {vg_diff:.6f}")
 
-    print("\nPolicy D1/D2 Pull Balance by Context:")
-    print("  ctx      |D1|      |D2|      D2/D1    D1std    D2std")
+    print(f"\nPolicy {labels['half1_short']}/{labels['half2_short']} Pull Balance by Context:")
+    print(f"  ctx      |{labels['half1_short']}|      |{labels['half2_short']}|      ratio    half1std    half2std")
     for ctx in contexts:
         stats = all_data.get(ctx, {}).get('pull_stats')
         if stats is None:
@@ -3064,7 +3670,7 @@ def plot_context_mega_comparison(contexts, trialsfiles, modelfile, figspath):
 
     policy_lim, value_lim = _compute_weight_limits(all_data, baseline_data, contexts)
 
-    # Calculate global max for the D1/D2/V Policy grids so colors are comparable
+    # Calculate global max for the policy half-split and total grids so colors are comparable
     grid_max_vals = []
     for ctx in contexts:
         if ctx in all_data and all_data[ctx].get('grid_V') is not None:
@@ -3076,9 +3682,9 @@ def plot_context_mega_comparison(contexts, trialsfiles, modelfile, figspath):
     global_grid_max = max(grid_max_vals) if grid_max_vals else 1.0
 
     import matplotlib.pyplot as plt
-    # Height increased to 33 to accommodate 11 rows
-    fig = plt.figure(figsize=(3 * len(contexts), 33)) 
-    gs = fig.add_gridspec(11, len(contexts), hspace=0.35, wspace=0.25)
+    n_contexts = len(contexts)
+    fig = plt.figure(figsize=(3 * n_contexts, 33))
+    gs = fig.add_gridspec(11, n_contexts, hspace=0.35, wspace=0.25)
 
     def get_title(ctx):
         return f'Ctx = {ctx:+.1f}'
@@ -3088,20 +3694,19 @@ def plot_context_mega_comparison(contexts, trialsfiles, modelfile, figspath):
     _plot_row_regression(fig, gs, 2, contexts, all_data, 'policy', 'Policy\nβEV')
     _plot_row_regression(fig, gs, 3, contexts, all_data, 'value', 'Value\nβEV')
     _plot_row_regression_keys(fig, gs, 4, contexts, all_data,
-                              'beta_hh_ll_policy_d1', 'beta_ev_policy_d1', 'Policy D1\nβEV')
+                              'beta_hh_ll_policy_d1', 'beta_ev_policy_d1', labels['half1_beta'])
     _plot_row_regression_keys(fig, gs, 5, contexts, all_data,
-                              'beta_hh_ll_policy_d2', 'beta_ev_policy_d2', 'Policy D2\nβEV')
+                              'beta_hh_ll_policy_d2', 'beta_ev_policy_d2', labels['half2_beta'])
     _plot_row_beta_vs_weights_keys(fig, gs, 6, contexts, all_data,
                                    'Wout_policy_d1', 'beta_hh_ll_policy_d1', 'red', policy_lim,
-                                   'Policy D1\nOutput Weight')
+                                   labels['half1_weight'])
     _plot_row_beta_vs_weights_keys(fig, gs, 7, contexts, all_data,
                                    'Wout_policy_d2', 'beta_hh_ll_policy_d2', 'red', policy_lim,
-                                   'Policy D2\nOutput Weight')
+                                   labels['half2_weight'])
 
-    # --- NEW: Rows 8, 9, 10 for the Biological Subjective Values ---
-    _plot_row_policy_grids(fig, gs, 8, contexts, all_data, 'grid_D1', 'Policy D1\nGo Pull', global_grid_max)
-    _plot_row_policy_grids(fig, gs, 9, contexts, all_data, 'grid_D2', 'Policy D2\nNoGo Pull', global_grid_max)
-    _plot_row_policy_grids(fig, gs, 10, contexts, all_data, 'grid_V', 'Policy Total\nV = P - N', global_grid_max)
+    _plot_row_policy_grids(fig, gs, 8, contexts, all_data, 'grid_D1', labels['half1_row'], global_grid_max)
+    _plot_row_policy_grids(fig, gs, 9, contexts, all_data, 'grid_D2', labels['half2_row'], global_grid_max)
+    _plot_row_policy_grids(fig, gs, 10, contexts, all_data, 'grid_V', labels['total_row'], global_grid_max)
 
     plt.tight_layout(rect=[0, 0, 1, 1])
 
@@ -3141,8 +3746,7 @@ def _plot_row_policy_grids(fig, gs, row, col_keys, all_data, grid_key, ylabel, g
         ax.set_xticklabels(['10%', '30%', '50%', '70%', '90%'], fontsize=8, rotation=45)
             
     if im is not None:
-        pos = axes[-1].get_position()
-        cax = fig.add_axes([pos.x1 + 0.01, pos.y0, 0.01, pos.height])
+        cax = _row_colorbar_axis(fig, axes[-1])
         cbar = plt.colorbar(im, cax=cax)
         cbar.set_label('Logits (Preference)', fontsize=9, rotation=270, labelpad=15)
         cbar.ax.tick_params(labelsize=8)

@@ -1,5 +1,5 @@
 """
-Default configuration parameters for policy gradient training.
+Default configuration parameters for recurrent actor-critic training.
 """
 import numpy as np
 
@@ -13,8 +13,8 @@ default = {
     'baseline_p0':           1,
     'lr':                    0.001,
     'baseline_lr':           0.005,
-    'lr_decay':              0.001,    # Learning rate decay factor (0 = no decay, 0.001 = slow decay)
-    'baseline_lr_decay':     0.001,  # Baseline LR decay (mimics synaptic consolidation)
+    'lr_decay':              0.0005,    # Learning rate decay factor (0 = no decay, 0.001 = slow decay)
+    'baseline_lr_decay':     0.0005,  # Baseline LR decay (mimics synaptic consolidation)
     'max_iter':              3000,
     'fix':                   [],
     'baseline_fix':          [],
@@ -43,7 +43,7 @@ default = {
     'Win_mask':              None,
     'baseline_Win_mask':     None,
     'rho':                   2,
-    'kappa':                 0,  # Risk-sensitivity parameter: -1 (risk-averse) to +1 (risk-seeking)
+    'kappa':                 0,  # Learning-asymmetry signal, clipped to [-0.9, 0.9]
     'baseline_rho':          2,
     'L1_Wrec':               0,
     'L2_Wrec':               1e-5,
@@ -52,22 +52,7 @@ default = {
     'policy_dropout':        0.2,
     'policy_seed':           1,
     'baseline_seed':         2,
-    "advantage_clip":        None,
-    "normalize_advantages":  True,
 
-    # ========== Distributional RL Settings ==========
-    # Enable these flags to use distributional critic with quantile regression
-    # All default to False for backward compatibility with existing models
-
-    'use_distributional_critic':      False,  # Enable 5-quantile distributional critic (instead of single V(s))
-    'n_quantiles':                    5,      # Number of quantiles for distributional critic
-    'quantile_huber_kappa':           1.0,    # Huber loss threshold for quantile regression
-
-    # Context-based modulation (requires distributional critic for quantile selection)
-    'use_context_quantile_selection': False,  # Let context signal select which quantile to use for advantage
-    'use_context_temperature':        False,  # Let context signal modulate softmax temperature
-    'temperature_base':               1.0,    # Base temperature for softmax (1.0 = standard softmax)
-    'temperature_context_scale':      0.5,    # How much context affects temperature (0 = no effect)
     'context_decision_only':          False,  # Apply context input only during decision period
 
     # Baseline input composition
@@ -79,26 +64,11 @@ default = {
     'context_uniform_high':           1.0,
     'context_gaussian_mean':          0.0,
     'context_gaussian_std':           0.8,
-    'training_context_input':         True,
-
-    # Context input to baseline network (for future extensions)
-    'context_to_baseline':            False,  # Add context as explicit input to baseline network
-
-    # ========== Context Signal Extraction ==========
-    # Controls how context signal is computed from baseline hidden states
-    'context_projection_learned':     False,  # True: Learn linear projection W*baseline_states + b
-                                               # False: Simple sum (tanh(sum(baseline_states)))
-    'context_projection_lr':          0.001,  # Learning rate for context projection (if learned)
-
-    # ========== Expected Value Computation from Quantiles ==========
-    # IMPORTANT: Median ≠ Expected Value for skewed distributions
-    # This flag determines how to compute EV from the distributional critic
-    'use_quantile_mean_for_ev':       True,   # True: EV = mean(all quantiles) - statistically correct
-                                               # False: EV = median quantile (Q_0.50) - simpler but biased for skewed distributions
+    'training_context_input':         False,
 
     # ========== RPE-Based D1/D2 Modulation ==========
     # Use continuous RPE signal from value network to modulate D1/D2 receptor occupancy
-    'use_rpe_modulation':             True,  # Enable RPE-based D1/D2 modulation during cue phase
+    'use_rpe_modulation':             False,  # Enable RPE-based D1/D2 modulation during cue phase
     'rpe_modulation_gain':            3.0,    # Gain factor for RPE → dopamine mapping (default: 1.0)
     'rpe_modulation_clamp':           0.9,    # Clamp RPE signal to [-clamp, +clamp] before modulation
 
@@ -115,7 +85,7 @@ default = {
 
     # Per-neuron dopamine receptor sensitivity. When enabled, dopamine remains
     # push-pull but each MSN has a different gain magnitude.
-    'dopamine_heterogeneous_sensitivity': True,
+    'dopamine_heterogeneous_sensitivity': False,
     'dopamine_sensitivity_min':       0.3,
     'dopamine_sensitivity_max':       1.0,
     'dopamine_sensitivity_learned':   False,
@@ -133,6 +103,14 @@ default = {
     'dopamine_learning_modulation_mode': 'linear',  # 'linear' or 'hill'
     'dopamine_learning_eta_min':      0.1,
     'dopamine_learning_eta_max':      1.9,
+
+    # Optional three-factor/Hebbian-style actor update. When enabled, the
+    # policy output-weight gradient is multiplied by current weight strength,
+    # so learning depends on pre/activity, dopamine/error, and actor weight.
+    'actor_weight_learning_modulation': False,
+    'actor_weight_learning_floor':    0.05,
+    'actor_weight_learning_max':      2.0,
+    'actor_weight_learning_normalize': True,
 
     # ========== Optogenetic VTA Stimulation (Inference Only) ==========
     # Simulate optogenetic manipulation of dopamine neurons during inference

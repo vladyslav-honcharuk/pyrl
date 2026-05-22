@@ -68,7 +68,6 @@ class GRU(RecurrentNetwork):
         # Fixed parameters
         self._fixed_params = self.config['fix']
 
-        print(f"[ {self.network_name} ] alpha = {self.alpha}")
 
         # Initialize or load parameters
         if params is None:
@@ -84,7 +83,6 @@ class GRU(RecurrentNetwork):
     def _initialize_params(self, seed, masks):
         """Initialize network parameters."""
         rng = get_rng(seed, __name__)
-        print(f"Seed = {seed}")
 
         # Connection masks
         if masks is None:
@@ -92,7 +90,6 @@ class GRU(RecurrentNetwork):
 
         # Input mask
         if self.config['Win_mask'] is not None:
-            print(f"[ {self.network_name} ] Setting mask for Win.")
             masks['Win'] = self.config['Win_mask']
 
         # Sparse recurrent connectivity
@@ -153,10 +150,8 @@ class GRU(RecurrentNetwork):
 
         # Output weights
         if self.config['Wout'] > 0:
-            print(f"[ {self.network_name} ] Initialize Wout to random normal.")
             Wout = self.config['Wout'] * rng.normal(size=(self.N, self.Nout))
         else:
-            print(f"[ {self.network_name} ] Initialize Wout to zeros.")
             Wout = np.zeros((self.N, self.Nout))
         self.Wout = nn.Parameter(torch.FloatTensor(Wout))
 
@@ -254,7 +249,20 @@ class GRU(RecurrentNetwork):
         return_logits : bool
             If True, return raw logits before softmax. Default: False.
         """
-        logits = torch.matmul(r, self.Wout) + self.bout
+        # Compute logits with opponent modulation if enabled
+        if self.config.get('use_opponent_modulation', False):
+            # Direct (D1/Go) - Indirect (D2/No-Go) opponent computation
+            # This implements the biological mechanism where D1 and D2 pathways
+            # have opponent effects on action selection through GPi
+            half_N = self.N // 2
+            d1_rates = r[..., :half_N]
+            d2_rates = r[..., half_N:]
+            d1_logits = torch.matmul(d1_rates, self.Wout[:half_N, :])
+            d2_logits = torch.matmul(d2_rates, self.Wout[half_N:, :])
+            logits = d1_logits - d2_logits + self.bout
+        else:
+            # Standard computation: all neurons contribute additively
+            logits = torch.matmul(r, self.Wout) + self.bout
 
         if return_logits:
             return logits
@@ -274,23 +282,13 @@ class GRU(RecurrentNetwork):
             raise ValueError(f"Unknown output activation: {self.f_out}")
 
     def log_output(self, r, temperature=None):
-        """
-        Apply log output transformation with optional temperature scaling.
-
-        Parameters
-        ----------
-        r : tensor
-            Firing rates.
-        temperature : tensor, optional
-            Temperature for log_softmax. Shape: (B,) where B is batch size.
-            Only used if f_out='softmax'.
-            If None, uses standard log_softmax (temperature=1.0).
-        """
-        logits = torch.matmul(r, self.Wout) + self.bout
+        """Apply log output transformation with optional temperature scaling."""
+        # FIX: Route this through output_layer so the backward pass 
+        # shares the exact same D1/D2 opponent math as the rollout.
+        logits = self.output_layer(r, return_logits=True)
 
         if self.f_out == 'softmax':
             if temperature is not None:
-                # Apply temperature scaling
                 if temperature.dim() == 1:
                     temperature = temperature.unsqueeze(-1)
                 logits = logits / temperature

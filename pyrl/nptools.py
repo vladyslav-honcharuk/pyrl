@@ -19,7 +19,6 @@ def get_rng(seed=0, loc='Not specified'):
     np.random.RandomState
         Random number generator
     """
-    print("<< RNG {} >> {}".format(seed, loc))
     return np.random.RandomState(seed)
 
 

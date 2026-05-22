@@ -15,7 +15,7 @@ This repository contains a recurrent neural network trained with policy gradient
 ├── pyrl/                        # Core RL library
 │   ├── __init__.py
 │   ├── model.py                 # Model wrapper
-│   ├── policygradient.py        # Policy gradient algorithm
+│   ├── actor_critic.py          # Actor-critic trainer
 │   ├── gru.py                   # GRU network
 │   ├── simple.py                # Simple RNN network
 │   ├── networks.py              # Network registry

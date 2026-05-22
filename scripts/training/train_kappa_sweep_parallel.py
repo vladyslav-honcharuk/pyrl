@@ -5,8 +5,8 @@ Train a model with progressive kappa values IN PARALLEL.
 This script:
 1. Trains base model with kappa=0 for 2000 iterations
 2. Runs TWO chains in PARALLEL:
-   - Positive chain: 0 → 0.1 → 0.2 → ... → 1.0
-   - Negative chain: 0 → -0.1 → -0.2 → ... → -1.0
+   - Positive chain: 0 → 0.1 → 0.2 → ... → 0.9
+   - Negative chain: 0 → -0.1 → -0.2 → ... → -0.9
 
 Each step trains for 2000 iterations. The two chains run simultaneously
 to save time (roughly 2x faster than sequential).
@@ -138,8 +138,8 @@ def main():
     kappa_step = 0.1
 
     # Generate chains
-    positive_chain = [round(k, 1) for k in np.arange(0.1, 1.0 + kappa_step/2, kappa_step)]
-    negative_chain = [round(k, 1) for k in np.arange(-0.1, -1.0 - kappa_step/2, -kappa_step)]
+    positive_chain = [round(k, 1) for k in np.arange(0.1, 0.9 + kappa_step/2, kappa_step)]
+    negative_chain = [round(k, 1) for k in np.arange(-0.1, -0.9 - kappa_step/2, -kappa_step)]
 
     print(f"{'='*80}")
     print(f"KAPPA SWEEP TRAINING (PARALLEL)")
