@@ -192,6 +192,18 @@ class GRU(RecurrentNetwork):
             return param * mask
         return param
 
+    def _policy_readout_rates(self, r):
+        """Map tanh activity to nonnegative readout rates when configured."""
+        if self.config.get('positive_policy_readout', False) and self.f_out == 'softmax':
+            return 0.5 * (r + 1.0)
+        return r
+
+    def _effective_output_weights(self):
+        """Return output weights after optional positivity constraint."""
+        if self.config.get('positive_policy_readout', False) and self.f_out == 'softmax':
+            return F.softplus(self.Wout)
+        return self.Wout
+
     def recurrent_step(self, u, q, x_tm1, dopamine_signal=None):
         """
         Single GRU step.
@@ -249,20 +261,23 @@ class GRU(RecurrentNetwork):
         return_logits : bool
             If True, return raw logits before softmax. Default: False.
         """
+        r_out = self._policy_readout_rates(r)
+        Wout = self._effective_output_weights()
+
         # Compute logits with opponent modulation if enabled
         if self.config.get('use_opponent_modulation', False):
             # Direct (D1/Go) - Indirect (D2/No-Go) opponent computation
             # This implements the biological mechanism where D1 and D2 pathways
             # have opponent effects on action selection through GPi
             half_N = self.N // 2
-            d1_rates = r[..., :half_N]
-            d2_rates = r[..., half_N:]
-            d1_logits = torch.matmul(d1_rates, self.Wout[:half_N, :])
-            d2_logits = torch.matmul(d2_rates, self.Wout[half_N:, :])
+            d1_rates = r_out[..., :half_N]
+            d2_rates = r_out[..., half_N:]
+            d1_logits = torch.matmul(d1_rates, Wout[:half_N, :])
+            d2_logits = torch.matmul(d2_rates, Wout[half_N:, :])
             logits = d1_logits - d2_logits + self.bout
         else:
             # Standard computation: all neurons contribute additively
-            logits = torch.matmul(r, self.Wout) + self.bout
+            logits = torch.matmul(r_out, Wout) + self.bout
 
         if return_logits:
             return logits

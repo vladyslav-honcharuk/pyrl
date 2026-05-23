@@ -66,6 +66,13 @@ train_context_d1d2() {
     --dopamine-bias
 }
 
+# train_context_d1d2_positive() {
+#   train_model "context_d1d2_positive" "_context_d1d2_positive" \
+#     --opponent-modulation \
+#     --positive-policy-readout
+# }
+
+
 train_d1d2_only() {
   train_model "d1d2_only" "_d1d2_only" \
     --opponent-modulation \
@@ -199,6 +206,14 @@ train_phasic_rpe_vta_d1d2_context() {
     --dopamine-bias
 }
 
+train_full_model() {
+  train_phasic_rpe_vta_d1d2_context
+}
+
+train_main_model() {
+  train_phasic_rpe_vta_d1d2_context
+}
+
 train_finetuned_kappa_chain() {
   train_model "finetuned_kappa_0.0" "_ft_kappa_0p0" --kappa 0.0
 
@@ -247,18 +262,19 @@ train_finetuned_kappa_negative_chain() {
 
 # Pick the steps you want to run by uncommenting them.
 # train_basic
+# train_rpe_feedback
+# train_d1d2_only
 # train_regular_context
-# train_context_d1d2
-train_d1d2_only
+train_context_d1d2
 
 # for kappa in -0.9 -0.8 -0.7 -0.6 -0.5 -0.4 -0.3 -0.2 -0.1 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9; do
 #   train_hardwired_kappa "$kappa"
 # done
 
 # train_finetuned_kappa_chain
-train_rpe_feedback
-train_phasic_rpe_d1d2_context
-train_tonic_vta_context
-train_tonic_vta_d1d2_context
-train_rpe_plus_vta_context
-train_phasic_rpe_vta_d1d2_context
+
+# train_phasic_rpe_d1d2_context
+# train_tonic_vta_context
+# train_tonic_vta_d1d2_context
+# train_rpe_plus_vta_context
+# train_phasic_rpe_vta_d1d2_context

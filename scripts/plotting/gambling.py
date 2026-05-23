@@ -538,6 +538,131 @@ def plot_context_choice_probability_curves(contexts, trialsfiles, figspath, base
         print(f"Saved probability weighting curve: {outfile}")
 
 
+def plot_single_choice_probability_curves(trialsfile, figspath):
+    """
+    Plot simple single-model probability weighting curves.
+
+    For each EV group, show proportion chosen as a function of reward probability.
+    """
+    os.makedirs(figspath, exist_ok=True)
+
+    td = load_trial_data(trialsfile)
+    action_indices = convert_actions(td['A'])
+    choice_data = compute_option_choice_frequency(td['trials'], action_indices)
+
+    unique_evs = sorted(choice_data.keys())
+    if len(unique_evs) == 0:
+        raise SystemExit("No choice data found. Check trial file.")
+
+    colors = plt.cm.viridis(np.linspace(0.15, 0.9, len(unique_evs)))
+
+    fig, ax = plt.subplots(figsize=(8.8, 5.8))
+
+    for ev_idx, ev_level in enumerate(unique_evs):
+        ev_data = choice_data[ev_level]
+        probs = ev_data['probabilities']
+        props = ev_data['choice_proportions']
+
+        if len(probs) >= 2:
+            from scipy.interpolate import interp1d
+            f = interp1d(
+                probs, props, kind='linear',
+                bounds_error=False, fill_value='extrapolate'
+            )
+            x_smooth = np.linspace(probs.min(), probs.max(), 100)
+            y_smooth = np.clip(f(x_smooth), 0, 1)
+            ax.plot(x_smooth, y_smooth, '-', color=colors[ev_idx], linewidth=2.2, alpha=0.9)
+
+        ax.plot(
+            probs, props, 'o',
+            color=colors[ev_idx],
+            markerfacecolor=colors[ev_idx],
+            markeredgecolor=colors[ev_idx],
+            markersize=7,
+            label=f'EV {_format_ev_label(ev_level)}'
+        )
+
+    ax.set_title('Choice Probability by EV and Reward Probability', fontsize=15, pad=12)
+    ax.set_xlabel('Probability (%)', fontsize=14)
+    ax.set_ylabel('Proportion chosen', fontsize=14)
+    ax.set_xlim(0, 100)
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_xticks([10, 30, 50, 70, 90])
+    ax.set_yticks([0, 0.5, 1.0])
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.tick_params(labelsize=12)
+    ax.legend(frameon=False, fontsize=10, title='Option EV', title_fontsize=11, loc='best')
+
+    outfile = os.path.join(figspath, 'choice_probability_curves.png')
+    fig.savefig(outfile, dpi=220, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved probability weighting curves: {outfile}")
+
+
+def plot_proportion_chosen_summaries(trialsfile, figspath):
+    """
+    Recreate the two simple line plots:
+    1. Mean proportion chosen by EV column
+    2. Mean proportion chosen by probability level ("risk")
+    """
+    os.makedirs(figspath, exist_ok=True)
+
+    td = load_trial_data(trialsfile)
+    action_indices = convert_actions(td['A'])
+    choice_data = compute_option_choice_frequency(td['trials'], action_indices)
+
+    unique_evs = sorted(choice_data.keys())
+    if len(unique_evs) == 0:
+        raise SystemExit("No choice data found. Check trial file.")
+
+    # Mean proportion chosen within each EV column.
+    ev_levels_ul = np.array(unique_evs) * 100.0
+    ev_choice_props = np.array([
+        np.nanmean(choice_data[ev]['choice_proportions'])
+        for ev in unique_evs
+    ])
+
+    fig, ax = plt.subplots(figsize=(4.0, 5.0))
+    ax.plot(ev_choice_props, ev_levels_ul, '-s', color='#222222', linewidth=1.8, markersize=6)
+    ax.set_xlabel('Proportion chosen', fontsize=14)
+    ax.set_ylabel('EV (\u03bcL)', fontsize=14)
+    ax.set_xlim(1.0, 0.0)
+    ax.set_ylim(ev_levels_ul.min() - 15, ev_levels_ul.max() + 15)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.tick_params(labelsize=12, width=1.2, length=6)
+    ax.set_yticks(ev_levels_ul)
+    plt.tight_layout()
+
+    outfile = os.path.join(figspath, 'proportion_chosen_by_ev.png')
+    fig.savefig(outfile, dpi=220, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved EV proportion plot: {outfile}")
+
+    # Mean proportion chosen across EV columns for each probability level.
+    probs = choice_data[unique_evs[0]]['probabilities']
+    risk_choice_props = np.array([
+        np.nanmean([choice_data[ev]['choice_proportions'][i] for ev in unique_evs])
+        for i in range(len(probs))
+    ])
+
+    fig, ax = plt.subplots(figsize=(4.6, 3.8))
+    ax.plot(probs, risk_choice_props, '-s', color='#222222', linewidth=1.8, markersize=6)
+    ax.set_xlabel('Probability (%)', fontsize=14)
+    ax.set_ylabel('Proportion chosen', fontsize=14)
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xticks([10, 30, 50, 70, 90])
+    ax.set_yticks([0.0, 0.5, 1.0])
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.tick_params(labelsize=12, width=1.2, length=6)
+    plt.tight_layout()
+
+    outfile = os.path.join(figspath, 'proportion_chosen_by_risk.png')
+    fig.savefig(outfile, dpi=220, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved risk proportion plot: {outfile}")
+
+
 def plot_context_choice_probability_mega(contexts, trialsfiles, figspath, baseline_context=0.0):
     """
     Create a compact 2-row mega plot of probability weighting curves.
@@ -777,7 +902,7 @@ def compute_theoretical_evs():
 
 
 def create_extended_value_colormap():
-    """Custom colormap with viridis reserved for the 0.39-1.01 value range."""
+    """Custom colormap with viridis reserved for the 0.30-1.10 value range."""
     viridis = plt.cm.viridis
 
     # LogNorm maps [vmin=0.01, vmax=10.0] to [0, 1].
@@ -790,13 +915,13 @@ def create_extended_value_colormap():
     # band around neutral expected values. Values below that use a distinct
     # magenta-to-blue extension so sub-neutral values remain distinguishable.
     vf = [0.0, 0.25, 0.5, 0.75, 1.0]
-    viridis_anchors = [(0.39 + f * (1.01 - 0.39), viridis(f)) for f in vf]
+    viridis_anchors = [(0.30 + f * (1.10 - 0.30), viridis(f)) for f in vf]
     anchors = [
         (0.01, '#3b0f70'),
         (0.04, '#8c2981'),
         (0.10, '#de4968'),
         (0.20, '#fe9f6d'),
-        (0.32, '#f6d746'),
+        (0.29, '#f6d746'),
         *viridis_anchors,
         (5.00, '#ff8c00'),
         (10.0, '#ff0000'),
@@ -949,10 +1074,33 @@ def _symmetric_axis_limit(values, min_limit=0.02, pad=1.25, percentile=99):
     return max(float(limit), min_limit)
 
 
-def _row_colorbar_axis(fig, ax, width=0.006):
-    """Add a row colorbar axis next to the last panel."""
-    pos = ax.get_position()
-    return fig.add_axes([pos.x1 + 0.01, pos.y0, width, pos.height])
+def _add_row_colorbar(fig, ax, mappable, label, ticks=None, ticklabels=None):
+    """Add a row colorbar with layout that matches the figure mode."""
+    if getattr(fig, '_horizontal_single_condition', False):
+        cax = ax.inset_axes([0.14, -0.34, 0.72, 0.08])
+        cbar = plt.colorbar(mappable, cax=cax, orientation='horizontal')
+        cbar.set_label(label, fontsize=8, labelpad=2)
+        cbar.ax.tick_params(labelsize=7, pad=1)
+    else:
+        pos = ax.get_position()
+        width = 0.006
+        x0 = min(pos.x1 + 0.01, 0.985 - width)
+        cax = fig.add_axes([x0, pos.y0, width, pos.height])
+        cbar = plt.colorbar(mappable, cax=cax)
+        cbar.set_label(label, fontsize=9, rotation=270, labelpad=15)
+        cbar.ax.tick_params(labelsize=8)
+
+    if ticks is not None:
+        cbar.set_ticks(ticks)
+    if ticklabels is not None:
+        cbar.set_ticklabels(ticklabels)
+    return cbar
+
+
+def _maybe_set_square_panel(fig, ax):
+    """Keep single-condition horizontal panels visually square."""
+    if getattr(fig, '_horizontal_single_condition', False):
+        ax.set_box_aspect(1)
 
 
 def _plot_row_behavior(fig, gs, row, col_keys, all_data, get_title):
@@ -961,6 +1109,7 @@ def _plot_row_behavior(fig, gs, row, col_keys, all_data, get_title):
     im = None
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
+        _maybe_set_square_panel(fig, ax)
         axes.append(ax)
         if key not in all_data:
             ax.text(0.5, 0.5, f'No data\n{key}', ha='center', va='center', transform=ax.transAxes)
@@ -982,10 +1131,7 @@ def _plot_row_behavior(fig, gs, row, col_keys, all_data, get_title):
             ax.set_ylabel('ΔEV', fontsize=10); ax.set_xlabel('ΔHH-LL', fontsize=9)
     # Colorbar
     if im is not None:
-        cax = _row_colorbar_axis(fig, axes[-1])
-        cbar = plt.colorbar(im, cax=cax)
-        cbar.set_label('P(Right)', fontsize=9, rotation=270, labelpad=15)
-        cbar.ax.tick_params(labelsize=8)
+        _add_row_colorbar(fig, axes[-1], im, 'P(Right)')
     return axes
 
 
@@ -997,6 +1143,7 @@ def _plot_row_values(fig, gs, row, col_keys, all_data):
     norm = LogNorm(vmin=0.01, vmax=10.0)
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
+        _maybe_set_square_panel(fig, ax)
         axes.append(ax)
         if key not in all_data:
             ax.set_xticks([]); ax.set_yticks([])
@@ -1012,13 +1159,11 @@ def _plot_row_values(fig, gs, row, col_keys, all_data):
         if idx == 0:
             ax.set_ylabel('EV', fontsize=10); ax.set_xlabel('HH-LL(%)', fontsize=9)
     if im is not None:
-        cax = _row_colorbar_axis(fig, axes[-1])
-        cbar = plt.colorbar(im, cax=cax)
-        cbar.set_label('Predicted\nValue', fontsize=9, rotation=270, labelpad=15)
-        cbar.ax.tick_params(labelsize=8)
-        # Ticks in data coordinates; LogNorm handles the scaling
-        cbar.set_ticks([0.01, 0.39, 1.01, 5.0, 10.0])
-        cbar.set_ticklabels(['0.01', '0.39', '1.01', '5.0', '10.0'])
+        _add_row_colorbar(
+            fig, axes[-1], im, 'Predicted Value',
+            ticks=[0.01, 0.30, 1.10, 5.0, 10.0],
+            ticklabels=['0.01', '0.30', '1.10', '5.0', '10.0']
+        )
     return axes
 
 def _plot_row_regression(fig, gs, row, col_keys, all_data, network, ylabel):
@@ -1037,6 +1182,7 @@ def _plot_row_regression(fig, gs, row, col_keys, all_data, network, ylabel):
         ylim = 0.8
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
+        _maybe_set_square_panel(fig, ax)
         axes.append(ax)
         if key not in all_data:
             continue
@@ -1055,10 +1201,7 @@ def _plot_row_regression(fig, gs, row, col_keys, all_data, network, ylabel):
         if idx == 0:
             ax.set_ylabel(ylabel, fontsize=10); ax.set_xlabel('βHH-LL', fontsize=9)
     if sc is not None:
-        cax = _row_colorbar_axis(fig, axes[-1])
-        cbar = plt.colorbar(sc, cax=cax)
-        cbar.set_label('Neuron\n(sorted by βEV)', fontsize=9, rotation=270, labelpad=15)
-        cbar.ax.tick_params(labelsize=8)
+        cbar = _add_row_colorbar(fig, axes[-1], sc, 'Neuron (sorted by βEV)')
         n = len(all_data[col_keys[-1] if col_keys[-1] in all_data else
                  next(k for k in reversed(col_keys) if k in all_data)][beta_key_ev])
         mid = (n + 1) // 2
@@ -1073,6 +1216,7 @@ def _plot_row_regression_keys(fig, gs, row, col_keys, all_data, beta_key_hh, bet
     sc = None
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
+        _maybe_set_square_panel(fig, ax)
         axes.append(ax)
         if key not in all_data:
             continue
@@ -1091,10 +1235,7 @@ def _plot_row_regression_keys(fig, gs, row, col_keys, all_data, beta_key_hh, bet
         if idx == 0:
             ax.set_ylabel(ylabel, fontsize=10); ax.set_xlabel('βHH-LL', fontsize=9)
     if sc is not None:
-        cax = _row_colorbar_axis(fig, axes[-1])
-        cbar = plt.colorbar(sc, cax=cax)
-        cbar.set_label('Neuron\n(sorted by βEV)', fontsize=9, rotation=270, labelpad=15)
-        cbar.ax.tick_params(labelsize=8)
+        cbar = _add_row_colorbar(fig, axes[-1], sc, 'Neuron (sorted by βEV)')
         n = len(all_data[col_keys[-1] if col_keys[-1] in all_data else
                  next(k for k in reversed(col_keys) if k in all_data)][beta_key_ev])
         mid = (n + 1) // 2
@@ -1110,6 +1251,7 @@ def _plot_row_weights(fig, gs, row, col_keys, all_data, baseline_data,
     baseline_w = baseline_data.get(wkey) if baseline_data else None
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
+        _maybe_set_square_panel(fig, ax)
         if key not in all_data:
             continue
         w = all_data[key].get(wkey)
@@ -1160,6 +1302,7 @@ def _plot_row_beta_vs_weights(fig, gs, row, col_keys, all_data, network, color, 
         ylim = wlim
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
+        _maybe_set_square_panel(fig, ax)
         if key not in all_data:
             continue
         betas = all_data[key][beta_key]
@@ -1186,6 +1329,7 @@ def _plot_row_beta_vs_weights_keys(fig, gs, row, col_keys, all_data, wkey, beta_
     """Plot Row: β_HH-LL vs output weights using explicit keys."""
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
+        _maybe_set_square_panel(fig, ax)
         if key not in all_data:
             continue
         betas = all_data[key][beta_key]
@@ -1512,11 +1656,11 @@ def plot_predicted_values(trialsfile, figspath, kappa=None):
     print(f"  Min: {value_grid.min():.3f}")
     print(f"  Max: {value_grid.max():.3f}")
     print(f"  Mean: {value_grid.mean():.3f}")
-    print(f"  Expected EV range: 0.40 to 1.00")
+    print(f"  Expected EV range: 0.30 to 1.10")
 
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(value_grid, cmap='viridis', aspect='auto', origin='lower',
-                   vmin=0.4, vmax=1.0)
+                   vmin=0.30, vmax=1.10)
 
     ax.set_ylabel('EV', fontsize=14, weight='bold')
     ax.set_xlabel('HH-LL(%)', fontsize=14, weight='bold')
@@ -2001,7 +2145,33 @@ def do(action, args, config):
             raise SystemExit(f"Missing trial data file: {trialsfile}")
 
         plot_heatmap(trialsfile, config['figspath'])
-        
+
+    elif action == 'choice-probability-curves':
+        if len(args) > 0:
+            trialsfile = args[0]
+        else:
+            trialsfile = runtools.activityfile(config['trialspath'])
+            if not os.path.exists(trialsfile):
+                trialsfile = runtools.behaviorfile(config['trialspath'])
+
+        if not os.path.exists(trialsfile):
+            raise SystemExit(f"Missing trial data file: {trialsfile}")
+
+        plot_single_choice_probability_curves(trialsfile, config['figspath'])
+
+    elif action == 'proportion-chosen':
+        if len(args) > 0:
+            trialsfile = args[0]
+        else:
+            trialsfile = runtools.activityfile(config['trialspath'])
+            if not os.path.exists(trialsfile):
+                trialsfile = runtools.behaviorfile(config['trialspath'])
+
+        if not os.path.exists(trialsfile):
+            raise SystemExit(f"Missing trial data file: {trialsfile}")
+
+        plot_proportion_chosen_summaries(trialsfile, config['figspath'])
+
     elif action in ('opto-sweep', 'opto-sweep-dense'):
             # Optogenetic VTA stimulation sweep
             # Test different dopamine offset levels during inference
@@ -3202,8 +3372,13 @@ def plot_mega_comparison(kappa_values, trialsfiles, modelfiles, figspath, plot_t
 
     if horizontal:
         # Horizontal layout: n_kappas rows × 11 columns
-        fig = plt.figure(figsize=(33, 3 * n_kappas))
-        gs_base = fig.add_gridspec(n_kappas, 11, hspace=0.25, wspace=0.35)
+        fig = plt.figure(figsize=(38, 4.5 * n_kappas))
+        fig._horizontal_single_condition = (n_kappas == 1)
+        gs_base = fig.add_gridspec(
+            n_kappas, 11,
+            left=0.035, right=0.985, bottom=0.26, top=0.96,
+            hspace=0.24, wspace=0.40
+        )
 
         # Create a transposed gridspec wrapper
         class TransposedGridSpec:
@@ -3220,9 +3395,12 @@ def plot_mega_comparison(kappa_values, trialsfiles, modelfiles, figspath, plot_t
     else:
         # Vertical layout: 11 rows × n_kappas columns
         fig = plt.figure(figsize=(3 * n_kappas, 33))
+        fig._horizontal_single_condition = False
         gs = fig.add_gridspec(11, n_kappas, hspace=0.35, wspace=0.25)
 
     def get_title(kappa):
+        if horizontal and n_kappas == 1:
+            return ''
         return f'κ={kappa:+.1f}'
 
     # Now use the same plotting code for both layouts (gridspec handles transposition)
@@ -3251,12 +3429,13 @@ def plot_mega_comparison(kappa_values, trialsfiles, modelfiles, figspath, plot_t
     _plot_row_policy_grids(fig, gs, 9, kappa_values, all_data, 'grid_D2', labels['half2_row'], global_grid_max)
     _plot_row_policy_grids(fig, gs, 10, kappa_values, all_data, 'grid_V', labels['total_row'], global_grid_max)
 
-    plt.tight_layout(rect=[0, 0, 1, 1])
+    if not horizontal:
+        plt.tight_layout(rect=[0, 0, 1, 1])
 
     if plot_title == 'Neuromodulation Comparison':
         savefile = os.path.join(figspath, 'mega_comparison_neuromodulation.png')
     elif plot_title == 'Single Kappa Condition':
-        savefile = os.path.join(figspath, 'kappa_single_condition.png')
+        savefile = os.path.join(figspath, 'main.png')
     else:
         savefile = os.path.join(figspath, 'mega_comparison_all_kappas.png')
 
@@ -3586,15 +3765,36 @@ def plot_context_mega_comparison(contexts, trialsfiles, modelfile, figspath):
         Wout_policy = policy_params.get('Wout')
 
         if Win_policy is not None:
-            Nin = Win_policy.shape[1]
+            # GRU input weights are stored as (Nin, 3*N):
+            # state inputs, update gate inputs, and reset/candidate gate inputs.
+            Nin = Win_policy.shape[0]
             print(f"Policy Network Input Size (Nin): {Nin}")
             
             if Nin >= 8:
-                context_weights = Win_policy[:, 7] 
-                print(f"\nContext Input Weights (Win[:, 7]):")
+                context_weights = Win_policy[7, :]
+                print(f"\nContext Input Weights (Win[7, :]):")
                 print(f"  Mean:    {np.mean(context_weights):.6f}")
                 print(f"  Std Dev: {np.std(context_weights):.6f}")
                 print(f"  Max Abs: {np.max(np.abs(context_weights)):.6f}")
+
+                if Wout_policy is not None:
+                    n_policy = Wout_policy.shape[0]
+                    half_N = n_policy // 2
+                    context_state = context_weights[:n_policy]
+                    context_update = context_weights[n_policy:2*n_policy]
+                    context_gate = context_weights[2*n_policy:3*n_policy]
+                    for block_name, block_weights in [
+                        ('state input', context_state),
+                        ('update gate', context_update),
+                        ('candidate gate', context_gate),
+                    ]:
+                        first_half = block_weights[:half_N]
+                        second_half = block_weights[half_N:]
+                        print(
+                            f"  {block_name:>12}: "
+                            f"{labels['half1_short']} mean {np.mean(first_half):+.6f}, "
+                            f"{labels['half2_short']} mean {np.mean(second_half):+.6f}"
+                        )
                 
                 if np.std(context_weights) < 1e-4:
                     print("  ⚠️ WARNING: Context input weights are effectively ZERO.")
@@ -3722,6 +3922,7 @@ def _plot_row_policy_grids(fig, gs, row, col_keys, all_data, grid_key, ylabel, g
     im = None
     for idx, key in enumerate(col_keys):
         ax = fig.add_subplot(gs[row, idx])
+        _maybe_set_square_panel(fig, ax)
         axes.append(ax)
         if key not in all_data or all_data[key].get(grid_key) is None:
             ax.set_xticks([]); ax.set_yticks([])
@@ -3746,10 +3947,7 @@ def _plot_row_policy_grids(fig, gs, row, col_keys, all_data, grid_key, ylabel, g
         ax.set_xticklabels(['10%', '30%', '50%', '70%', '90%'], fontsize=8, rotation=45)
             
     if im is not None:
-        cax = _row_colorbar_axis(fig, axes[-1])
-        cbar = plt.colorbar(im, cax=cax)
-        cbar.set_label('Logits (Preference)', fontsize=9, rotation=270, labelpad=15)
-        cbar.ax.tick_params(labelsize=8)
+        _add_row_colorbar(fig, axes[-1], im, 'Logits (Preference)')
     return axes
 
 

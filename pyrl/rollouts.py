@@ -38,6 +38,28 @@ class RolloutMixin:
             "If this model needs direct context, build it with a CONTEXT input."
         )
 
+    def _policy_pathway_pulls(self, r_t_for_action):
+        """Return effective D1 and D2 contributions to the final action logits."""
+        half_N = self.policy_net.N // 2
+        if hasattr(self.policy_net, '_policy_readout_rates'):
+            r_out = self.policy_net._policy_readout_rates(r_t_for_action)
+        else:
+            r_out = r_t_for_action
+        if hasattr(self.policy_net, '_effective_output_weights'):
+            Wout = self.policy_net._effective_output_weights()
+        else:
+            Wout = self.policy_net.Wout
+
+        d1_pull = torch.matmul(r_out[..., :half_N], Wout[:half_N, :])
+        d2_raw = torch.matmul(r_out[..., half_N:], Wout[half_N:, :])
+
+        if self.policy_net.config.get('use_opponent_modulation', False):
+            d2_pull = -d2_raw
+        else:
+            d2_pull = d2_raw
+
+        return d1_pull, d2_pull
+
     def _run_trials(self, trials, init=None, init_b=None, return_states=False,
                    perf=None, progress_bar=False, context_input=None, training=False,
                    context_sampling=None):
@@ -215,13 +237,8 @@ class RolloutMixin:
                 
                 Policy_Values[t, n] = logits_t.squeeze(0).detach()
                 
-                half_N = self.policy_net.N // 2
-                Wout = self.policy_net.Wout
-                
-                d1_pull = torch.matmul(r_t_for_action[..., :half_N], Wout[:half_N, :])
+                d1_pull, d2_pull = self._policy_pathway_pulls(r_t_for_action)
                 Policy_D1_Pull[t, n] = d1_pull.squeeze(0).detach()
-                
-                d2_pull = torch.matmul(r_t_for_action[..., half_N:], Wout[half_N:, :])
                 Policy_D2_Pull[t, n] = d2_pull.squeeze(0).detach()
                 
                 z_t_np = torch.softmax(logits_t, dim=-1).squeeze(0).cpu().detach().numpy()
@@ -308,13 +325,8 @@ class RolloutMixin:
                     
                     Policy_Values[t, n] = logits_t.squeeze(0).detach()
                     
-                    half_N = self.policy_net.N // 2
-                    Wout = self.policy_net.Wout
-                    
-                    d1_pull = torch.matmul(r_t_for_action[..., :half_N], Wout[:half_N, :])
+                    d1_pull, d2_pull = self._policy_pathway_pulls(r_t_for_action)
                     Policy_D1_Pull[t, n] = d1_pull.squeeze(0).detach()
-                    
-                    d2_pull = torch.matmul(r_t_for_action[..., half_N:], Wout[half_N:, :])
                     Policy_D2_Pull[t, n] = d2_pull.squeeze(0).detach()
                     
                     z_t_np = torch.softmax(logits_t, dim=-1).squeeze(0).cpu().detach().numpy()

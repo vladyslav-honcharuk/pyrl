@@ -97,9 +97,25 @@ plot_behavior() {
   fi
 }
 
+plot_proportion_chosen() {
+  local group="$1"
+  local suffix="$2"
+
+  plot_model "$group" "$suffix" "proportion-chosen"
+}
+
+plot_choice_probability_curves() {
+  local group="$1"
+  local suffix="$2"
+
+  plot_model "$group" "$suffix" "choice-probability-curves"
+}
+
 plot_basic() {
   ensure_trials "basic_default" "_basic_default" 1
   plot_behavior "basic_default" "_basic_default"
+  plot_proportion_chosen "basic_default" "_basic_default"
+  plot_choice_probability_curves "basic_default" "_basic_default"
   plot_model "basic_default" "_basic_default" "kappa-single" 0.0 1
 }
 
@@ -109,50 +125,33 @@ plot_single_model() {
 
   ensure_trials "$group" "$suffix" 1
   plot_behavior "$group" "$suffix"
+  plot_proportion_chosen "$group" "$suffix"
+  plot_choice_probability_curves "$group" "$suffix"
   plot_model "$group" "$suffix" "kappa-single" 0.0 1
 }
 
-plot_context_model() {
+plot_context_only_model() {
   local group="$1"
   local suffix="$2"
 
   clean_context_trials "$group" "$suffix"
   ensure_trials "$group" "$suffix" 1
   plot_behavior "$group" "$suffix"
+  plot_proportion_chosen "$group" "$suffix"
+  plot_choice_probability_curves "$group" "$suffix"
   plot_model "$group" "$suffix" "context-sweep-0p2"
-}
-
-plot_runtime_dopamine_model() {
-  local group="$1"
-  local suffix="$2"
-
-  clean_context_trials "$group" "$suffix"
-  ensure_trials "$group" "$suffix" 1
-  plot_behavior "$group" "$suffix"
-  plot_model "$group" "$suffix" "opto-sweep"
-}
-
-plot_context_runtime_dopamine_model() {
-  local group="$1"
-  local suffix="$2"
-
-  clean_context_trials "$group" "$suffix"
-  ensure_trials "$group" "$suffix" 1
-  plot_behavior "$group" "$suffix"
-  plot_model "$group" "$suffix" "context-sweep-0p2"
-  plot_model "$group" "$suffix" "opto-sweep"
 }
 
 plot_regular_context() {
-  plot_context_model "regular_context" "_regular_context"
+  plot_context_only_model "regular_context" "_regular_context"
 }
 
 plot_context_d1d2() {
-  plot_context_runtime_dopamine_model "context_d1d2" "_context_d1d2"
+  plot_context_only_model "context_d1d2" "_context_d1d2"
 }
 
 plot_d1d2_only() {
-  plot_runtime_dopamine_model "d1d2_only" "_d1d2_only"
+  plot_single_model "d1d2_only" "_d1d2_only"
 }
 
 plot_hardwired_kappa() {
@@ -164,6 +163,8 @@ plot_hardwired_kappa() {
 
   ensure_trials "$group" "$suffix" 2
   plot_behavior "$group" "$suffix"
+  plot_proportion_chosen "$group" "$suffix"
+  plot_choice_probability_curves "$group" "$suffix"
   plot_model "$group" "$suffix" "kappa-single" "$kappa" 2
 }
 
@@ -176,6 +177,8 @@ plot_finetuned_kappa() {
 
   ensure_trials "$group" "$suffix" 2
   plot_behavior "$group" "$suffix"
+  plot_proportion_chosen "$group" "$suffix"
+  plot_choice_probability_curves "$group" "$suffix"
 }
 
 plot_finetuned_kappa_mega() {
@@ -187,39 +190,39 @@ plot_hardwired_kappa_mega() {
 }
 
 plot_rpe_feedback() {
-  plot_runtime_dopamine_model "phasic_rpe_d1d2" "_phasic_rpe_d1d2"
+  plot_single_model "phasic_rpe_d1d2" "_phasic_rpe_d1d2"
 }
 
 plot_rpe_feedback_legacy_name() {
-  plot_runtime_dopamine_model "natural_rpe_feedback" "_rpe_feedback"
+  plot_single_model "natural_rpe_feedback" "_rpe_feedback"
 }
 
 plot_phasic_rpe_d1d2_context() {
-  plot_context_runtime_dopamine_model "phasic_rpe_d1d2_context" "_phasic_rpe_d1d2_context"
+  plot_context_only_model "phasic_rpe_d1d2_context" "_phasic_rpe_d1d2_context"
 }
 
 plot_tonic_vta_context() {
-  plot_runtime_dopamine_model "tonic_vta_d1d2" "_tonic_vta_d1d2"
+  plot_single_model "tonic_vta_d1d2" "_tonic_vta_d1d2"
 }
 
 plot_tonic_vta_context_legacy_name() {
-  plot_runtime_dopamine_model "tonic_vta_context" "_tonic_vta_context"
+  plot_single_model "tonic_vta_context" "_tonic_vta_context"
 }
 
 plot_tonic_vta_d1d2_context() {
-  plot_context_runtime_dopamine_model "tonic_vta_d1d2_context" "_tonic_vta_d1d2_context"
+  plot_context_only_model "tonic_vta_d1d2_context" "_tonic_vta_d1d2_context"
 }
 
 plot_rpe_plus_vta_context() {
-  plot_runtime_dopamine_model "phasic_rpe_vta_d1d2" "_phasic_rpe_vta_d1d2"
+  plot_single_model "phasic_rpe_vta_d1d2" "_phasic_rpe_vta_d1d2"
 }
 
 plot_rpe_plus_vta_context_legacy_name() {
-  plot_runtime_dopamine_model "rpe_plus_vta_context" "_rpe_plus_vta_context"
+  plot_single_model "rpe_plus_vta_context" "_rpe_plus_vta_context"
 }
 
 plot_phasic_rpe_vta_d1d2_context() {
-  plot_context_runtime_dopamine_model "phasic_rpe_vta_d1d2_context" "_phasic_rpe_vta_d1d2_context"
+  plot_context_only_model "phasic_rpe_vta_d1d2_context" "_phasic_rpe_vta_d1d2_context"
 }
 
 plot_all_model_variants() {
@@ -255,9 +258,14 @@ fi
 
 # Pick the plots you want to run by uncommenting them.
 # plot_basic
+# plot_rpe_feedback
+
+
+
+# plot_d1d2_only
+
 # plot_regular_context
 plot_context_d1d2
-# plot_d1d2_only
 
 # for kappa in -0.9 -0.8 -0.7 -0.6 -0.5 -0.4 -0.3 -0.2 -0.1 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9; do
 #   plot_finetuned_kappa "$kappa"
@@ -269,10 +277,10 @@ plot_context_d1d2
 # done
 # plot_hardwired_kappa_mega
 
-# plot_rpe_feedback
-# plot_phasic_rpe_d1d2_context
-# plot_tonic_vta_context
-# plot_tonic_vta_d1d2_context
-# plot_rpe_plus_vta_context
-# plot_phasic_rpe_vta_d1d2_context
-# plot_all_model_variants
+
+plot_phasic_rpe_d1d2_context
+plot_tonic_vta_context
+plot_tonic_vta_d1d2_context
+plot_rpe_plus_vta_context
+plot_phasic_rpe_vta_d1d2_context
+plot_all_model_variants

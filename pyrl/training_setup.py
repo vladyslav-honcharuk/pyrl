@@ -39,6 +39,8 @@ class SetupMixin:
         self.policy_config = save['policy_config']
         self.policy_config['alpha'] = alpha
         for key in (
+            'use_opponent_modulation',
+            'positive_policy_readout',
             'dopamine_modulation_mode',
             'dopamine_hill_base_da',
             'dopamine_hill_da_range',
@@ -100,6 +102,8 @@ class SetupMixin:
             'Win': config['Win'] * np.sqrt(K) / config['Nin'],
             'Win_mask': config['Win_mask'],
             'bout': config['bout'],
+            'use_opponent_modulation': config.get('use_opponent_modulation', False),
+            'positive_policy_readout': config.get('positive_policy_readout', False),
             'fix': config['fix'],
             'L2_r': config['L2_r'],
             'activity_balance': config.get('activity_balance', 0),

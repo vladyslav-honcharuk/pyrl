@@ -15,7 +15,7 @@ default = {
     'baseline_lr':           0.005,
     'lr_decay':              0.0005,    # Learning rate decay factor (0 = no decay, 0.001 = slow decay)
     'baseline_lr_decay':     0.0005,  # Baseline LR decay (mimics synaptic consolidation)
-    'max_iter':              3000,
+    'max_iter':              4500,
     'fix':                   [],
     'baseline_fix':          [],
     'target_reward':         np.inf,
@@ -35,7 +35,7 @@ default = {
     'L2_r':                  0,
     'baseline_L2_r':         0,
     'activity_balance':      0,
-    'baseline_activity_balance': 0.03,
+    'baseline_activity_balance': 0.3,
     'Win':                   1,
     'baseline_Win':          1,
     'bout':                  0,
@@ -111,6 +111,7 @@ default = {
     'actor_weight_learning_floor':    0.05,
     'actor_weight_learning_max':      2.0,
     'actor_weight_learning_normalize': True,
+    'positive_policy_readout':        False,
 
     # ========== Optogenetic VTA Stimulation (Inference Only) ==========
     # Simulate optogenetic manipulation of dopamine neurons during inference

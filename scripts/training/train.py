@@ -40,6 +40,8 @@ def apply_config_overrides(model, args):
 
     if args.opponent_modulation:
         model.config['use_opponent_modulation'] = True
+    if args.positive_policy_readout:
+        model.config['positive_policy_readout'] = True
     if args.context_decision_only:
         model.config['context_decision_only'] = True
 
@@ -169,6 +171,8 @@ def main():
                        help='Gradient clipping threshold for baseline network (default: no clipping)')
     parser.add_argument('--opponent-modulation', action='store_true', default=False,
                        help='Enable D1/D2 opponent modulation of policy activations')
+    parser.add_argument('--positive-policy-readout', action='store_true', default=False,
+                       help='Use nonnegative policy readout rates and softplus-constrained output weights')
     parser.add_argument('--context-decision-only', action='store_true', default=False,
                        help='Apply context input only during the decision period')
     parser.add_argument('--context-distribution', type=str, default=None,
