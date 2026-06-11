@@ -1,0 +1,3 @@
+# Simulation backend dependency, in addition to the project's root
+# requirements.txt (torch, numpy, scipy, matplotlib).
+flask>=3.0
