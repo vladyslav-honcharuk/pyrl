@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Gambling Task &mdash; 3D Monkey Simulation</title>
+<link rel="stylesheet" href="/static/css/style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+
+  <!-- Left control rail -->
+  <aside id="controls" class="panel">
+    <h1>Risk-RL Monkey Lab</h1>
+
+    <section>
+      <h2>Subject</h2>
+      <div class="seg" id="species">
+        <button data-species="marmoset">Marmoset</button>
+        <button data-species="macaque" class="active">Macaque</button>
+        <button data-species="chimpanzee">Chimpanzee</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Model</h2>
+      <select id="preset"></select>
+      <p id="preset-desc" class="hint"></p>
+    </section>
+
+    <section>
+      <h2>Baseline dopamine</h2>
+      <input type="range" id="dopamine" min="-1" max="1" step="0.05" value="0" />
+      <div class="row between">
+        <span class="hint">risk-averse</span>
+        <span id="dopamine-val" class="mono">0.00</span>
+        <span class="hint">risk-seeking</span>
+      </div>
+      <p class="hint">Baked in as <span class="mono">kappa</span> when you train.</p>
+    </section>
+
+    <section>
+      <div class="row">
+        <button id="train-btn" class="primary">Train agent</button>
+        <button id="stop-btn" class="ghost" disabled>Stop</button>
+      </div>
+      <div id="train-state" class="hint">No model yet &mdash; train one to begin.</div>
+    </section>
+
+    <section>
+      <h2>Environment editor</h2>
+      <p class="hint">Click two cells in the 5&times;5 option grid: first = LEFT, second = RIGHT.</p>
+      <canvas id="optiongrid" width="240" height="240"></canvas>
+      <div id="option-readout" class="hint mono"></div>
+    </section>
+
+    <section>
+      <h2>Live dopamine (inference)</h2>
+      <input type="range" id="inf-dopamine" min="-1" max="1" step="0.05" value="0" />
+      <div class="row between">
+        <span class="hint">less DA</span>
+        <span id="inf-dopamine-val" class="mono">0.00</span>
+        <span class="hint">more DA</span>
+      </div>
+      <p class="hint">Shifts risk preference on a trained model without retraining.</p>
+    </section>
+
+    <section>
+      <div class="row">
+        <button id="trial-btn" class="primary" disabled>Run trial</button>
+        <button id="auto-btn" class="ghost" disabled>Auto-run</button>
+      </div>
+    </section>
+  </aside>
+
+  <!-- Right analytics rail -->
+  <aside id="analytics" class="panel">
+    <section>
+      <h2>Learning curve</h2>
+      <canvas id="learncurve" width="320" height="170"></canvas>
+      <div class="legend">
+        <span class="dot reward"></span>mean reward
+        <span class="dot correct"></span>P(correct)
+      </div>
+    </section>
+
+    <section>
+      <h2>Predicted value (5&times;5)</h2>
+      <canvas id="valuegrid" width="320" height="200"></canvas>
+      <p class="hint">Rows = win probability (0.1&rarr;0.9), columns = reward magnitude.</p>
+    </section>
+
+    <section>
+      <h2>This trial</h2>
+      <div id="trial-readout" class="trial-readout">&mdash;</div>
+    </section>
+  </aside>
+
+  <div id="hud">
+    <span id="hud-trial">trial 0</span>
+    <span id="hud-phase">&mdash;</span>
+    <span id="hud-choice">&mdash;</span>
+  </div>
+</div>
+
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
