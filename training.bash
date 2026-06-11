@@ -2,9 +2,14 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-python3}"
+TRAIN_DEVICE="${TRAIN_DEVICE:-cpu}"
 TASK="tasks/gambling.py"
 TRAIN="scripts/training/train.py"
-DATA_ROOT="data_progress2"
+DATA_ROOT="data_progression3"
+CONDITION_DEFS="scripts/gambling_condition_defs.bash"
+
+# shellcheck source=/dev/null
+source "$CONDITION_DEFS"
 
 kappa_tag() {
   printf '%+.1f' "$1" | sed 's/+//; s/-/neg/; s/\./p/'
@@ -25,6 +30,7 @@ train_model() {
   "$PYTHON" "$TRAIN" "$TASK" \
     --data-root "$DATA_ROOT/$group" \
     --suffix "$suffix" \
+    --device "$TRAIN_DEVICE" \
     "$@" \
     train
 }
@@ -39,45 +45,33 @@ finetune_model() {
     --data-root "$DATA_ROOT/$group" \
     --suffix "$suffix" \
     --pretrained "$pretrained" \
+    --device "$TRAIN_DEVICE" \
     "$@" \
     finetune
 }
 
-train_basic() {
-  train_model "basic_default" "_basic_default"
-}
+# Naming guide:
+# - tonic: direct task context input through the normal sensory/input channel.
+# - hidden_tonic: sampled dopamine context during training without a sensory CONTEXT input.
+# - vta_phasic_natural: natural critic-derived RPE drives D1/D2 dopamine modulation.
+# - vta_offset: sampled tonic VTA dopamine offset; RPE gain is set to 0.
+# - d1d2: opponent policy readout, D1 contribution minus D2 contribution.
 
-train_regular_context() {
-  train_model "regular_context" "_regular_context" \
-    --training-context-input \
-    --context-distribution uniform \
-    --context-uniform-low -1.0 \
-    --context-uniform-high 1.0
-}
+train_condition() {
+  local target="$1"
 
-train_context_d1d2() {
-  train_model "context_d1d2" "_context_d1d2" \
-    --training-context-input \
-    --context-distribution uniform \
-    --context-uniform-low -1.0 \
-    --context-uniform-high 1.0 \
-    --opponent-modulation \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
-}
+  if ! condition_exists "$target"; then
+    echo "Unknown training condition: $target" >&2
+    return 2
+  fi
 
-# train_context_d1d2_positive() {
-#   train_model "context_d1d2_positive" "_context_d1d2_positive" \
-#     --opponent-modulation \
-#     --positive-policy-readout
-# }
-
-
-train_d1d2_only() {
-  train_model "d1d2_only" "_d1d2_only" \
-    --opponent-modulation \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
+  condition_group_suffix "$target"
+  if [[ "${CONDITION_TRAINABLE:-1}" != "1" ]]; then
+    echo "Condition is plot-only and has no training definition: $target" >&2
+    return 2
+  fi
+  condition_train_args "$target"
+  train_model "$CONDITION_GROUP" "$CONDITION_SUFFIX" "${CONDITION_ARGS[@]}"
 }
 
 train_hardwired_kappa() {
@@ -89,130 +83,73 @@ train_hardwired_kappa() {
     --kappa "$kappa"
 }
 
-train_rpe_feedback() {
-  train_model "phasic_rpe_d1d2" "_phasic_rpe_d1d2" \
-    --rpe-modulation \
-    --rpe-modulation-gain 3.0 \
-    --rpe-modulation-clamp 0.9 \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
+train_d1d2_v() {
+  train_model "d1d2_v" "_d1d2_v" \
+    --opponent-modulation \
+    --positive-policy-readout \
+    --pathway-specific-plasticity \
+    --opal-d1-negative-scale 0.4 \
+    --opal-d2-positive-scale 0.4 \
+    --policy-value-feedback
 }
 
-train_rpe_feedback_legacy_name() {
-  train_model "natural_rpe_feedback" "_rpe_feedback" \
-    --rpe-modulation \
-    --rpe-modulation-gain 3.0 \
-    --rpe-modulation-clamp 0.9 \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
+train_d1d2_vpop() {
+  train_model "d1d2_vpop" "_d1d2_vpop" \
+    --opponent-modulation \
+    --positive-policy-readout \
+    --pathway-specific-plasticity \
+    --opal-d1-negative-scale 0.4 \
+    --opal-d2-positive-scale 0.4 \
+    --policy-value-population-feedback
 }
 
-train_phasic_rpe_d1d2_context() {
-  train_model "phasic_rpe_d1d2_context" "_phasic_rpe_d1d2_context" \
-    --training-context-input \
-    --context-distribution uniform \
-    --context-uniform-low -1.0 \
-    --context-uniform-high 1.0 \
-    --rpe-modulation \
-    --rpe-modulation-gain 3.0 \
-    --rpe-modulation-clamp 0.9 \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
+train_d1d2_vmod() {
+  train_model "d1d2_vmod" "_d1d2_vmod" \
+    --opponent-modulation \
+    --positive-policy-readout \
+    --pathway-specific-plasticity \
+    --opal-d1-negative-scale 0.4 \
+    --opal-d2-positive-scale 0.4 \
+    --use-value-modulation
 }
 
-train_tonic_vta_context() {
-  train_model "tonic_vta_d1d2" "_tonic_vta_d1d2" \
-    --rpe-modulation \
-    --rpe-modulation-gain 0.0 \
-    --rpe-modulation-clamp 0.9 \
-    --vta-training-context \
-    --vta-context-distribution uniform \
-    --vta-context-low -0.9 \
-    --vta-context-high 0.9 \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
+train_d1d2_vmod_shared() {
+  train_model "d1d2_vmod_shared" "_d1d2_vmod_shared" \
+    --opponent-modulation \
+    --positive-policy-readout \
+    --pathway-specific-plasticity \
+    --opal-d1-negative-scale 0.4 \
+    --opal-d2-positive-scale 0.4 \
+    --use-value-modulation \
+    --use-value-modulation-shared-gain
 }
 
-train_tonic_vta_context_legacy_name() {
-  train_model "tonic_vta_context" "_tonic_vta_context" \
-    --rpe-modulation \
-    --rpe-modulation-gain 0.0 \
-    --rpe-modulation-clamp 0.9 \
-    --vta-training-context \
-    --vta-context-distribution uniform \
-    --vta-context-low -0.9 \
-    --vta-context-high 0.9 \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
+train_d1d2_recent_rpe() {
+  train_model "d1d2_recent_rpe_g01" "_d1d2_recent_rpe_g01" \
+    --opponent-modulation \
+    --positive-policy-readout \
+    --pathway-specific-plasticity \
+    --opal-d1-negative-scale 0.4 \
+    --opal-d2-positive-scale 0.4 \
+    --use-recent-rpe-modulation \
+    --recent-rpe-decay 0.7 \
+    --recent-rpe-gain 0.1 \
+    --recent-rpe-phase decision
 }
 
-train_tonic_vta_d1d2_context() {
-  train_model "tonic_vta_d1d2_context" "_tonic_vta_d1d2_context" \
-    --training-context-input \
-    --context-distribution uniform \
-    --context-uniform-low -1.0 \
-    --context-uniform-high 1.0 \
-    --rpe-modulation \
-    --rpe-modulation-gain 0.0 \
-    --rpe-modulation-clamp 0.9 \
-    --vta-training-context \
-    --vta-context-distribution uniform \
-    --vta-context-low -0.9 \
-    --vta-context-high 0.9 \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
+train_d1d2_recent_rpe_cuedec() {
+  train_model "d1d2_recent_rpe_g01_cuedec" "_d1d2_recent_rpe_g01_cuedec" \
+    --opponent-modulation \
+    --positive-policy-readout \
+    --pathway-specific-plasticity \
+    --opal-d1-negative-scale 0.4 \
+    --opal-d2-positive-scale 0.4 \
+    --use-recent-rpe-modulation \
+    --recent-rpe-decay 0.7 \
+    --recent-rpe-gain 0.1 \
+    --recent-rpe-phase cue_decision
 }
 
-train_rpe_plus_vta_context() {
-  train_model "phasic_rpe_vta_d1d2" "_phasic_rpe_vta_d1d2" \
-    --rpe-modulation \
-    --rpe-modulation-gain 3.0 \
-    --rpe-modulation-clamp 0.9 \
-    --vta-training-context \
-    --vta-context-distribution uniform \
-    --vta-context-low -0.9 \
-    --vta-context-high 0.9 \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
-}
-
-train_rpe_plus_vta_context_legacy_name() {
-  train_model "rpe_plus_vta_context" "_rpe_plus_vta_context" \
-    --rpe-modulation \
-    --rpe-modulation-gain 3.0 \
-    --rpe-modulation-clamp 0.9 \
-    --vta-training-context \
-    --vta-context-distribution uniform \
-    --vta-context-low -0.9 \
-    --vta-context-high 0.9 \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
-}
-
-train_phasic_rpe_vta_d1d2_context() {
-  train_model "phasic_rpe_vta_d1d2_context" "_phasic_rpe_vta_d1d2_context" \
-    --training-context-input \
-    --context-distribution uniform \
-    --context-uniform-low -1.0 \
-    --context-uniform-high 1.0 \
-    --rpe-modulation \
-    --rpe-modulation-gain 3.0 \
-    --rpe-modulation-clamp 0.9 \
-    --vta-training-context \
-    --vta-context-distribution uniform \
-    --vta-context-low -0.9 \
-    --vta-context-high 0.9 \
-    --dopamine-sensitivity-learned \
-    --dopamine-bias
-}
-
-train_full_model() {
-  train_phasic_rpe_vta_d1d2_context
-}
-
-train_main_model() {
-  train_phasic_rpe_vta_d1d2_context
-}
 
 train_finetuned_kappa_chain() {
   train_model "finetuned_kappa_0.0" "_ft_kappa_0p0" --kappa 0.0
@@ -261,11 +198,22 @@ train_finetuned_kappa_negative_chain() {
 }
 
 # Pick the steps you want to run by uncommenting them.
-# train_basic
-# train_rpe_feedback
-# train_d1d2_only
-# train_regular_context
-train_context_d1d2
+# train_condition basic
+# train_condition d1d2
+# train_condition d1d2_plasticity
+# train_condition d1d2_plasticity_opal04
+# train_d1d2_v
+# train_d1d2_vmod
+# train_d1d2_vmod_shared
+# train_d1d2_vpop
+# train_d1d2_recent_rpe
+train_d1d2_recent_rpe_cuedec
+# train_condition d1d2_plasticity_opal04_rpe_natural
+# train_condition tonic
+# train_condition tonic_d1d2
+# train_condition tonic_d1d2_plasticity
+# train_condition hidden_tonic_d1d2_plasticity
+# train_condition vta_phasic_natural_d1d2
 
 # for kappa in -0.9 -0.8 -0.7 -0.6 -0.5 -0.4 -0.3 -0.2 -0.1 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9; do
 #   train_hardwired_kappa "$kappa"
@@ -273,8 +221,8 @@ train_context_d1d2
 
 # train_finetuned_kappa_chain
 
-# train_phasic_rpe_d1d2_context
-# train_tonic_vta_context
-# train_tonic_vta_d1d2_context
-# train_rpe_plus_vta_context
-# train_phasic_rpe_vta_d1d2_context
+# train_condition tonic_vta_phasic_natural_d1d2
+# train_condition vta_offset_d1d2
+# train_condition tonic_vta_offset_d1d2
+# train_condition vta_phasic_natural_vta_offset_d1d2
+# train_condition tonic_vta_phasic_natural_vta_offset_d1d2

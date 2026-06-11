@@ -37,11 +37,35 @@ def apply_config_overrides(model, args):
             model.config['inputs'] = dict(model.config['inputs'])
             model.config['inputs']['CONTEXT'] = len(model.config['inputs'])
             model.config['Nin'] = len(model.config['inputs'])
+    if args.policy_value_feedback:
+        model.config['policy_value_feedback'] = True
+    if args.policy_value_population_feedback:
+        model.config['policy_value_population_feedback'] = True
+    if args.use_value_modulation:
+        model.config['use_value_modulation'] = True
+    if args.use_value_modulation_shared_gain:
+        model.config['use_value_modulation_shared_gain'] = True
+    if args.value_modulation_start_iter is not None:
+        model.config['value_modulation_start_iter'] = args.value_modulation_start_iter
+    if args.value_modulation_ramp_iters is not None:
+        model.config['value_modulation_ramp_iters'] = args.value_modulation_ramp_iters
+    if args.use_recent_rpe_modulation:
+        model.config['use_recent_rpe_modulation'] = True
+    if args.recent_rpe_decay is not None:
+        model.config['recent_rpe_decay'] = args.recent_rpe_decay
+    if args.recent_rpe_gain is not None:
+        model.config['recent_rpe_gain'] = args.recent_rpe_gain
+    if args.recent_rpe_clamp is not None:
+        model.config['recent_rpe_clamp'] = args.recent_rpe_clamp
+    if args.recent_rpe_phase is not None:
+        model.config['recent_rpe_phase'] = args.recent_rpe_phase
 
     if args.opponent_modulation:
         model.config['use_opponent_modulation'] = True
     if args.positive_policy_readout:
         model.config['positive_policy_readout'] = True
+    if args.exclude_control_action_from_dopamine_modulation:
+        model.config['exclude_control_action_from_dopamine_modulation'] = True
     if args.context_decision_only:
         model.config['context_decision_only'] = True
 
@@ -109,6 +133,16 @@ def apply_config_overrides(model, args):
         model.config['dopamine_learning_eta_min'] = args.dopamine_learning_eta_min
     if args.dopamine_learning_eta_max is not None:
         model.config['dopamine_learning_eta_max'] = args.dopamine_learning_eta_max
+    if args.pathway_specific_plasticity:
+        model.config['pathway_specific_plasticity'] = True
+    if args.opal_alpha_d1 is not None:
+        model.config['opal_alpha_d1'] = args.opal_alpha_d1
+    if args.opal_alpha_d2 is not None:
+        model.config['opal_alpha_d2'] = args.opal_alpha_d2
+    if args.opal_d1_negative_scale is not None:
+        model.config['opal_d1_negative_scale'] = args.opal_d1_negative_scale
+    if args.opal_d2_positive_scale is not None:
+        model.config['opal_d2_positive_scale'] = args.opal_d2_positive_scale
     if args.actor_weight_learning_modulation:
         model.config['actor_weight_learning_modulation'] = True
     if args.actor_weight_learning_floor is not None:
@@ -117,6 +151,18 @@ def apply_config_overrides(model, args):
         model.config['actor_weight_learning_max'] = args.actor_weight_learning_max
     if args.no_actor_weight_learning_normalize:
         model.config['actor_weight_learning_normalize'] = False
+    if args.positive_readout_weight_l2 is not None:
+        model.config['positive_readout_weight_l2'] = args.positive_readout_weight_l2
+    if args.opponent_pull_l2 is not None:
+        model.config['opponent_pull_l2'] = args.opponent_pull_l2
+    if args.decision_precision_compensation:
+        model.config['decision_precision_compensation'] = True
+    if args.decision_precision_sensitivity is not None:
+        model.config['decision_precision_sensitivity'] = args.decision_precision_sensitivity
+    if args.no_decision_precision_negative_only:
+        model.config['decision_precision_negative_only'] = False
+    if args.decision_precision_gain_max is not None:
+        model.config['decision_precision_gain_max'] = args.decision_precision_gain_max
     if args.baseline_activity_balance is not None:
         model.config['baseline_activity_balance'] = args.baseline_activity_balance
 
@@ -157,6 +203,8 @@ def main():
     parser.add_argument('--pretrained', type=str, default=None,
                        help='Path to pre-trained model weights (for finetune action). '
                             'If not specified, automatically uses base model name without suffix.')
+    parser.add_argument('--load-savefile', type=str, default=None,
+                       help='Override checkpoint path to load for info/run actions while keeping output folders from --data-root/--suffix')
     parser.add_argument('--finetune-iter', type=int, default=None,
                        help='Number of iterations for fine-tuning (default: use model config)')
     parser.add_argument('--finetune-lr', type=float, default=None,
@@ -173,6 +221,8 @@ def main():
                        help='Enable D1/D2 opponent modulation of policy activations')
     parser.add_argument('--positive-policy-readout', action='store_true', default=False,
                        help='Use nonnegative policy readout rates and softplus-constrained output weights')
+    parser.add_argument('--exclude-control-action-from-dopamine-modulation', action='store_true', default=False,
+                       help='Keep the single non-CHOOSE control action logit on the unmodulated readout path')
     parser.add_argument('--context-decision-only', action='store_true', default=False,
                        help='Apply context input only during the decision period')
     parser.add_argument('--context-distribution', type=str, default=None,
@@ -188,6 +238,29 @@ def main():
                        help='Standard deviation for Gaussian context c sampling')
     parser.add_argument('--training-context-input', action='store_true', default=False,
                        help='Enable sampled direct context input and add a CONTEXT channel for new models')
+    parser.add_argument('--policy-value-feedback', action='store_true', default=False,
+                       help='Append detached scalar critic value V(t) to the policy input at t+1 for new models')
+    parser.add_argument('--policy-value-population-feedback', action='store_true', default=False,
+                       help='Append detached critic population activity to the policy input at t+1 for new models')
+    parser.add_argument('--use-value-modulation', action='store_true', default=False,
+                       help='Use critic scalar V(t) to drive D1/D2 opponent modulation instead of context c')
+    parser.add_argument('--use-value-modulation-shared-gain', action='store_true', default=False,
+                       help='Use one shared gain+bias for value-driven D1/D2 modulation')
+    parser.add_argument('--value-modulation-start-iter', type=int, default=None,
+                       help='Delay value-driven D1/D2 modulation until this many training updates')
+    parser.add_argument('--value-modulation-ramp-iters', type=int, default=None,
+                       help='Ramp value-driven D1/D2 modulation from 0 to full strength over this many updates')
+    parser.add_argument('--use-recent-rpe-modulation', action='store_true', default=False,
+                       help='Use leaky previous-trial RPE to bias D1/D2 on the next trial')
+    parser.add_argument('--recent-rpe-decay', type=float, default=None,
+                       help='Persistence of previous-trial RPE across trials')
+    parser.add_argument('--recent-rpe-gain', type=float, default=None,
+                       help='Scale from recent-RPE state to D1/D2 modulation signal')
+    parser.add_argument('--recent-rpe-clamp', type=float, default=None,
+                       help='Clamp for effective recent-RPE modulation signal')
+    parser.add_argument('--recent-rpe-phase', type=str, default=None,
+                       choices=['all', 'fixation', 'cue', 'decision', 'cue_decision'],
+                       help='Phase to apply previous-trial RPE bias')
     parser.add_argument('--no-rpe-modulation', action='store_true', default=False,
                        help='Disable RPE/dopamine modulation for this run')
     parser.add_argument('--rpe-modulation', action='store_true', default=False,
@@ -245,6 +318,16 @@ def main():
                        help='Minimum eta_plus/eta_minus after learning modulation')
     parser.add_argument('--dopamine-learning-eta-max', type=float, default=None,
                        help='Maximum eta_plus/eta_minus after learning modulation')
+    parser.add_argument('--pathway-specific-plasticity', action='store_true', default=False,
+                       help='Enable OpAL-like choice plasticity through opponent logits G - N')
+    parser.add_argument('--opal-alpha-d1', type=float, default=None,
+                       help='D1/Go learning-rate multiplier for pathway-specific plasticity')
+    parser.add_argument('--opal-alpha-d2', type=float, default=None,
+                       help='D2/NoGo learning-rate multiplier for pathway-specific plasticity')
+    parser.add_argument('--opal-d1-negative-scale', type=float, default=None,
+                       help='Relative D1 update scale on negative-RPE trials (0 = no D1 loss-driven update)')
+    parser.add_argument('--opal-d2-positive-scale', type=float, default=None,
+                       help='Relative D2 update scale on positive-RPE trials (0 = no D2 win-driven update)')
     parser.add_argument('--actor-weight-learning-modulation', action='store_true', default=False,
                        help='Enable three-factor actor learning: scale Wout gradients by current actor weight strength')
     parser.add_argument('--actor-weight-learning-floor', type=float, default=None,
@@ -253,6 +336,18 @@ def main():
                        help='Maximum gradient multiplier for actor-weight learning modulation')
     parser.add_argument('--no-actor-weight-learning-normalize', action='store_true', default=False,
                        help='Do not normalize actor-weight learning multipliers by their mean')
+    parser.add_argument('--positive-readout-weight-l2', type=float, default=None,
+                       help='L2 coefficient on effective positive G/N policy output weights')
+    parser.add_argument('--opponent-pull-l2', type=float, default=None,
+                       help='L2 coefficient on D1 and D2 pre-subtraction policy pulls')
+    parser.add_argument('--decision-precision-compensation', action='store_true', default=False,
+                       help='Enable an extra final-logit precision gain after D1/D2 balance modulation')
+    parser.add_argument('--decision-precision-sensitivity', type=float, default=None,
+                       help='Slope for the final-logit precision gain driven by context/dopamine signal')
+    parser.add_argument('--no-decision-precision-negative-only', action='store_true', default=False,
+                       help='Apply decision precision gain to |signal| instead of only negative signal')
+    parser.add_argument('--decision-precision-gain-max', type=float, default=None,
+                       help='Clamp for the multiplicative decision precision gain')
     parser.add_argument('--baseline-activity-balance', type=float, default=None,
                        help='Regularizer strength to spread baseline/value activity across neurons')
 
@@ -356,8 +451,9 @@ def main():
         model = Model(modelfile)
         apply_config_overrides(model, args)
         # Use config if savefile doesn't exist, otherwise load from file
-        if os.path.exists(savefile):
-            pg = model.get_pg(savefile, seed, dt=dt, device=device)
+        load_savefile = args.load_savefile or savefile
+        if os.path.exists(load_savefile):
+            pg = model.get_pg(load_savefile, seed, dt=dt, device=device)
         else:
             pg = model.get_pg(model.config, seed, dt=dt, device=device)
 
@@ -451,19 +547,20 @@ def main():
             run_args = []
 
         # Copy the savefile for safe access
-        if os.path.isfile(savefile):
+        load_savefile = args.load_savefile or savefile
+        if os.path.isfile(load_savefile):
             import shutil
-            base, ext = os.path.splitext(savefile)
+            base, ext = os.path.splitext(load_savefile)
             savefile_copy = base + '_copy.pkl'
             while True:
-                shutil.copy(savefile, savefile_copy)
+                shutil.copy(load_savefile, savefile_copy)
                 try:
                     utils.load(savefile_copy)
                     break
                 except EOFError:
                     continue
         else:
-            print(f"File {savefile} doesn't exist.")
+            print(f"File {load_savefile} doesn't exist.")
             sys.exit(1)
 
         # Pass everything on to the analysis module

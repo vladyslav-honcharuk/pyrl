@@ -76,6 +76,7 @@ class GRU(RecurrentNetwork):
             self._load_params(params, masks)
         self._setup_dopamine_sensitivity(seed, params=params)
         self._setup_dopamine_bias(params=params)
+        self._setup_value_modulation(params=params)
 
         # Set output activation
         self.f_out = self.config['f_out']
@@ -192,17 +193,24 @@ class GRU(RecurrentNetwork):
             return param * mask
         return param
 
-    def _policy_readout_rates(self, r):
-        """Map tanh activity to nonnegative readout rates when configured."""
+    def policy_rates(self, x):
+        """Return the activity representation used only by the policy readout."""
         if self.config.get('positive_policy_readout', False) and self.f_out == 'softmax':
-            return 0.5 * (r + 1.0)
-        return r
+            return F.softplus(x)
+        return self.firing_rate(x)
 
     def _effective_output_weights(self):
-        """Return output weights after optional positivity constraint."""
+        """Return output weights after applying any readout constraint."""
         if self.config.get('positive_policy_readout', False) and self.f_out == 'softmax':
             return F.softplus(self.Wout)
         return self.Wout
+
+    def uses_opponent_readout(self):
+        """Return whether D2 is subtracted in the policy readout."""
+        return (
+            self.config.get('use_opponent_modulation', False) or
+            (self.config.get('positive_policy_readout', False) and self.f_out == 'softmax')
+        )
 
     def recurrent_step(self, u, q, x_tm1, dopamine_signal=None):
         """
@@ -228,6 +236,27 @@ class GRU(RecurrentNetwork):
 
         # Input transformation
         inputs_t = torch.matmul(u, self.Win) + self.bin
+        pop_input_dim = int(getattr(self, 'value_pop_input_dim', 0) or 0)
+        d1_gain = float(getattr(self, 'value_pop_current_d1_gain', 1.0))
+        d2_gain = float(getattr(self, 'value_pop_current_d2_gain', 1.0))
+        if pop_input_dim > 0 and (d1_gain != 1.0 or d2_gain != 1.0):
+            pop_u = u[:, -pop_input_dim:]
+            pop_current = torch.matmul(pop_u, self.Win[-pop_input_dim:, :])
+            scaled_pop_current = pop_current.clone()
+            half_N = self.N // 2
+            d1_cols = np.concatenate([
+                np.arange(0, half_N),
+                np.arange(self.N, self.N + half_N),
+                np.arange(2 * self.N, 2 * self.N + half_N),
+            ])
+            d2_cols = np.concatenate([
+                np.arange(half_N, self.N),
+                np.arange(self.N + half_N, 2 * self.N),
+                np.arange(2 * self.N + half_N, 3 * self.N),
+            ])
+            scaled_pop_current[:, d1_cols] *= d1_gain
+            scaled_pop_current[:, d2_cols] *= d2_gain
+            inputs_t = inputs_t + (scaled_pop_current - pop_current)
         state_inputs = inputs_t[:, :self.N]
         gate_inputs = inputs_t[:, self.N:]
 
@@ -246,61 +275,123 @@ class GRU(RecurrentNetwork):
 
         return x_t
 
-    def output_layer(self, r, temperature=None, return_logits=False):
+    def output_layer(self, r, temperature=None, return_logits=False, pathway_gradient=None,
+                     control_r=None, modulation_signal=None):
         """
         Apply output transformation with optional temperature scaling.
 
         Parameters
         ----------
         r : tensor
-            Firing rates.
+            Rates already prepared for policy readout by ``policy_rates`` and
+            any action-time dopamine modulation.
         temperature : tensor, optional
             Temperature for softmax. Shape: (B,) where B is batch size.
             Only used if f_out='softmax'. Higher temperature → flatter distribution.
             If None, uses standard softmax (temperature=1.0).
         return_logits : bool
             If True, return raw logits before softmax. Default: False.
+        pathway_gradient : {'d1', 'd2', 'bias'}, optional
+            Restrict autograd to one opponent readout pathway or only the
+            output bias. Used for pathway-specific plasticity during training.
+        control_r : tensor, optional
+            Unmodulated rates used only for the single control action logit
+            when exclude_control_action_from_dopamine_modulation is enabled.
         """
-        r_out = self._policy_readout_rates(r)
         Wout = self._effective_output_weights()
-
-        # Compute logits with opponent modulation if enabled
-        if self.config.get('use_opponent_modulation', False):
-            # Direct (D1/Go) - Indirect (D2/No-Go) opponent computation
-            # This implements the biological mechanism where D1 and D2 pathways
-            # have opponent effects on action selection through GPi
+        if self.config.get('positive_policy_readout', False) and self.f_out == 'softmax':
+            # OpAL-style readout: nonneg rates from pre-tanh state, nonneg weights,
+            # D1 (first half) promotes actions, D2 (second half) suppresses them.
             half_N = self.N // 2
-            d1_rates = r_out[..., :half_N]
-            d2_rates = r_out[..., half_N:]
+            d1_logits = torch.matmul(r[..., :half_N], Wout[:half_N, :])
+            d2_logits = torch.matmul(r[..., half_N:], Wout[half_N:, :])
+        elif self.uses_opponent_readout():
+            # Existing opponent path (unconstrained rates/weights, kept for compat)
+            half_N = self.N // 2
+            d1_rates = r[..., :half_N]
+            d2_rates = r[..., half_N:]
             d1_logits = torch.matmul(d1_rates, Wout[:half_N, :])
             d2_logits = torch.matmul(d2_rates, Wout[half_N:, :])
-            logits = d1_logits - d2_logits + self.bout
         else:
-            # Standard computation: all neurons contribute additively
-            logits = torch.matmul(r_out, Wout) + self.bout
+            if pathway_gradient is not None:
+                raise ValueError("pathway_gradient requires an opponent policy readout")
+            logits = torch.matmul(r, Wout) + self.bout
+
+        if self.uses_opponent_readout():
+            if pathway_gradient == 'd1':
+                logits = d1_logits - d2_logits.detach() + self.bout.detach()
+            elif pathway_gradient == 'd2':
+                logits = d1_logits.detach() - d2_logits + self.bout.detach()
+            elif pathway_gradient == 'bias':
+                logits = d1_logits.detach() - d2_logits.detach() + self.bout
+            elif pathway_gradient is None:
+                logits = d1_logits - d2_logits + self.bout
+            else:
+                raise ValueError(f"Unknown pathway_gradient: {pathway_gradient}")
+
+        control_index = self.control_action_index()
+        if control_index is not None and control_r is not None:
+            control_r = self._policy_readout_rates(control_r)
+            if self.uses_opponent_readout():
+                half_N = self.N // 2
+                control_d1 = torch.matmul(control_r[..., :half_N], Wout[:half_N, control_index:control_index + 1])
+                control_d2 = torch.matmul(control_r[..., half_N:], Wout[half_N:, control_index:control_index + 1])
+
+                if pathway_gradient == 'd1':
+                    control_logit = (
+                        control_d1
+                        - control_d2.detach()
+                        + self.bout[control_index:control_index + 1].detach()
+                    )
+                elif pathway_gradient == 'd2':
+                    control_logit = (
+                        control_d1.detach()
+                        - control_d2
+                        + self.bout[control_index:control_index + 1].detach()
+                    )
+                elif pathway_gradient == 'bias':
+                    control_logit = (
+                        control_d1.detach()
+                        - control_d2.detach()
+                        + self.bout[control_index:control_index + 1]
+                    )
+                else:
+                    control_logit = control_d1 - control_d2 + self.bout[control_index:control_index + 1]
+            else:
+                control_logit = (
+                    torch.matmul(control_r, Wout[:, control_index:control_index + 1])
+                    + self.bout[control_index:control_index + 1]
+                )
+
+            logits = logits.clone()
+            logits[..., control_index:control_index + 1] = control_logit
+
+        logits = self._apply_decision_precision_gain(logits, modulation_signal)
 
         if return_logits:
             return logits
 
         if self.f_out == 'softmax':
             if temperature is not None:
-                # Apply temperature scaling: softmax(logits / T)
-                # Reshape temperature for broadcasting: (B,) → (B, 1)
                 if temperature.dim() == 1:
                     temperature = temperature.unsqueeze(-1)
                 logits = logits / temperature
             return F.softmax(logits, dim=-1)
         elif self.f_out == 'linear':
-            # Linear output (value networks) - temperature not applicable
             return logits
         else:
             raise ValueError(f"Unknown output activation: {self.f_out}")
 
-    def log_output(self, r, temperature=None):
+    def log_output(self, r, temperature=None, pathway_gradient=None, control_r=None,
+                   modulation_signal=None):
         """Apply log output transformation with optional temperature scaling."""
-        # FIX: Route this through output_layer so the backward pass 
-        # shares the exact same D1/D2 opponent math as the rollout.
-        logits = self.output_layer(r, return_logits=True)
+        logits = self.output_layer(
+            r,
+            return_logits=True,
+            pathway_gradient=pathway_gradient,
+            control_r=control_r,
+            modulation_signal=modulation_signal
+        )
 
         if self.f_out == 'softmax':
             if temperature is not None:
@@ -312,6 +403,29 @@ class GRU(RecurrentNetwork):
             return torch.log(logits)
         else:
             raise ValueError(f"Unknown output activation: {self.f_out}")
+
+    def get_readout_regs(self, r, M):
+        """Penalize large positive actor strengths and cancelling opponent pulls."""
+        if not (self.config.get('positive_policy_readout', False) and self.f_out == 'softmax'):
+            return torch.tensor(0.0, device=r.device)
+
+        regs = torch.tensor(0.0, device=r.device)
+        Wout = self._effective_output_weights()
+        weight_l2 = float(self.config.get('positive_readout_weight_l2', 0.0))
+        if weight_l2 > 0:
+            regs = regs + weight_l2 * torch.mean(Wout ** 2)
+
+        pull_l2 = float(self.config.get('opponent_pull_l2', 0.0))
+        if pull_l2 > 0:
+            half_N = self.N // 2
+            d1_pull = torch.matmul(r[..., :half_N], Wout[:half_N, :])
+            d2_pull = torch.matmul(r[..., half_N:], Wout[half_N:, :])
+            M_expanded = M.unsqueeze(-1).expand_as(d1_pull)
+            n_valid = torch.sum(M_expanded).clamp_min(1.0)
+            pull_sq = (d1_pull ** 2 + d2_pull ** 2) * M_expanded
+            regs = regs + pull_l2 * torch.sum(pull_sq) / n_valid
+
+        return regs
 
     def get_regs(self, x0, x, M):
         """

@@ -35,7 +35,7 @@ def main(args):
     pg.opto_stim_phase = 'all'
 
     print(f"Running opto condition (offset={args.opto_offset}) with {len(trials)} trials")
-    results_opto = pg.run_trials(trials, return_states=True)
+    results_opto = pg.run_trials(trials, return_states=True, collect_policy_diagnostics=True)
 
     # Extract RPE timeseries and mask
     if 'RPE_continuous' not in results_opto:
@@ -55,7 +55,12 @@ def main(args):
     pg.opto_stim_offset = 0.0
 
     print("Running direct-context condition using trial-averaged RPE as context_input")
-    results_ctx = pg.run_trials(trials, return_states=True, context_input=trial_ctx)
+    results_ctx = pg.run_trials(
+        trials,
+        return_states=True,
+        context_input=trial_ctx,
+        collect_policy_diagnostics=True,
+    )
 
     # --- 3) Compare per-unit D1/D2 contributions ---
     D1_opto = results_opto['Policy_D1_Pull'].cpu().numpy()  # (T, B, Nout)

@@ -5,12 +5,121 @@ import sys
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 
 from . import utils
 
 
 class LearningMixin:
+    def _policy_aux_params(self):
+        """Return trainable auxiliary policy-feedback parameters, if any."""
+        params = []
+        for module_name in ('value_pop_proj_d1', 'value_pop_proj_d2'):
+            module = getattr(self, module_name, None)
+            if module is not None:
+                params.extend(list(module.parameters()))
+        return params
+
+    def _value_pop_feedback_state(self):
+        """Return checkpointable state for critic-population feedback modules."""
+        if getattr(self, 'value_pop_proj_d1', None) is None:
+            return None
+        return {
+            'd1': self.value_pop_proj_d1.state_dict(),
+            'd2': self.value_pop_proj_d2.state_dict(),
+        }
+
+    def _policy_input_win_norm(self, input_index):
+        """Return the norm of one policy input row in Win."""
+        Win = getattr(self.policy_net, 'Win', None)
+        if Win is None:
+            return None
+
+        with torch.no_grad():
+            return torch.linalg.vector_norm(Win[input_index]).item()
+
+    def _policy_named_input_win_norms(self):
+        """Return selected policy-input Win diagnostics keyed by readable labels."""
+        inputs = self.config.get('inputs', {})
+        if not isinstance(inputs, dict):
+            return OrderedDict()
+
+        items = OrderedDict()
+
+        fixation_idx = inputs.get('FIXATION')
+        if fixation_idx is not None:
+            fixation_norm = self._policy_input_win_norm(fixation_idx)
+            if fixation_norm is not None:
+                items['Fixation Win norm'] = f'{fixation_norm:.6f}'
+
+        for prefix, label in (
+            ('LEFT_', 'Left color mean Win norm'),
+            ('RIGHT_', 'Right color mean Win norm'),
+        ):
+            indices = [
+                index for name, index in inputs.items()
+                if str(name).startswith(prefix)
+            ]
+            if indices:
+                norms = [self._policy_input_win_norm(index) for index in indices]
+                norms = [value for value in norms if value is not None]
+                if norms:
+                    items[label] = f'{(sum(norms) / len(norms)):.6f}'
+
+        feedback_win_norm = self._policy_value_feedback_win_norm()
+        if feedback_win_norm is not None:
+            items['Value feedback Win norm'] = f'{feedback_win_norm:.6f}'
+
+        return items
+
+    def _policy_value_feedback_win_norm(self):
+        """Return the norm of the policy Win row for the scalar value-feedback input."""
+        if not getattr(self, 'policy_value_feedback', False):
+            return None
+
+        Win = getattr(self.policy_net, 'Win', None)
+        if Win is None:
+            return None
+
+        with torch.no_grad():
+            return torch.linalg.vector_norm(Win[-1]).item()
+
+    def _recent_rpe_modulation_diagnostics(self, results):
+        """Return readable diagnostics for previous-trial-RPE-driven D1/D2 modulation."""
+        if not self.config.get('use_recent_rpe_modulation', False):
+            return OrderedDict()
+
+        items = OrderedDict()
+        items['Recent RPE state'] = f"{float(getattr(self, 'recent_rpe_state', 0.0)):+.6f}"
+        items['Recent RPE decay'] = f"{float(getattr(self, 'recent_rpe_decay', 0.0)):.3f}"
+        items['Recent RPE gain'] = f"{float(getattr(self, 'recent_rpe_gain', 0.0)):.3f}"
+        items['Recent RPE phase'] = str(getattr(self, 'recent_rpe_phase', 'decision'))
+
+        if 'Policy_D1_Pull' in results and 'Policy_D2_Pull' in results:
+            mask = results['M']
+            d1 = results['Policy_D1_Pull']
+            d2 = results['Policy_D2_Pull']
+            expand_mask = mask.unsqueeze(-1)
+            valid = torch.sum(expand_mask).item()
+            if valid > 0:
+                mean_abs_d1 = (torch.sum(torch.abs(d1) * expand_mask) / torch.sum(expand_mask)).item()
+                mean_abs_d2 = (torch.sum(torch.abs(d2) * expand_mask) / torch.sum(expand_mask)).item()
+                ratio = mean_abs_d1 / max(mean_abs_d2, 1e-8)
+                items['Recent RPE mean |D1|'] = f'{mean_abs_d1:.6f}'
+                items['Recent RPE mean |D2|'] = f'{mean_abs_d2:.6f}'
+                items['Recent RPE |D1|/|D2|'] = f'{ratio:.6f}'
+
+        if 'Recent_RPE_Modulation' in results:
+            value_mod = results['Recent_RPE_Modulation']
+            mask = results['M']
+            valid_steps = torch.sum(mask).item()
+            if valid_steps > 0:
+                mean_vmod = (torch.sum(value_mod * mask) / torch.sum(mask)).item()
+                items['Recent RPE mean signal'] = f'{mean_vmod:+.6f}'
+
+        return items
+
     def _train(self, savefile, recover=False):
         """Train the policy and baseline networks."""
         # Training parameters
@@ -23,7 +132,8 @@ class LearningMixin:
 
 
         # Optimizers
-        policy_optimizer = optim.Adam(self.policy_net.get_trainable_params(), lr=lr)
+        policy_params = list(self.policy_net.get_trainable_params()) + self._policy_aux_params()
+        policy_optimizer = optim.Adam(policy_params, lr=lr)
         baseline_optimizer = optim.Adam(self.baseline_net.get_trainable_params(), lr=baseline_lr)
 
         # Initialize training state
@@ -37,9 +147,11 @@ class LearningMixin:
             best_perf = self.save['best_perf']
             best_policy_params = self.save['best_policy_params']
             best_baseline_params = self.save['best_baseline_params']
+            best_value_pop_feedback_state = self.save.get('best_value_pop_feedback_state')
 
             training_history = self.save['training_history']
             trials_tot = self.save['trials_tot']
+            self.recent_rpe_state = float(self.save.get('recent_rpe_state', 0.0))
 
             # Restore optimizer states if available
             if 'policy_optimizer_state' in self.save:
@@ -53,8 +165,10 @@ class LearningMixin:
             best_perf = None
             best_policy_params = self.policy_net.get_state_dict_numpy()
             best_baseline_params = self.baseline_net.get_state_dict_numpy()
+            best_value_pop_feedback_state = self._value_pop_feedback_state()
             training_history = []
             trials_tot = 0
+            self.recent_rpe_state = 0.0
 
         # Training loop
         if hasattr(self.task, 'start_session'):
@@ -64,6 +178,19 @@ class LearningMixin:
 
         try:
             for iter_ in range(iter_start, max_iter + 1):
+                if self.config.get('use_value_modulation', False):
+                    if iter_ < self.value_modulation_start_iter:
+                        self.value_modulation_scale = 0.0
+                    elif self.value_modulation_ramp_iters > 0:
+                        ramp_progress = (
+                            (iter_ - self.value_modulation_start_iter) /
+                            float(self.value_modulation_ramp_iters)
+                        )
+                        self.value_modulation_scale = float(np.clip(ramp_progress, 0.0, 1.0))
+                    else:
+                        self.value_modulation_scale = 1.0
+                    self.value_modulation_active = self.value_modulation_scale > 0.0
+
                 # Validation
                 if iter_ % checkfreq == 0 or iter_ == max_iter:
                     if n_validation > 0:
@@ -78,7 +205,11 @@ class LearningMixin:
                                      for _ in range(n_validation)]
 
                         # Run validation
-                        val_results = self.run_trials(val_trials, progress_bar=True)
+                        val_results = self.run_trials(
+                            val_trials,
+                            progress_bar=True,
+                            return_states=True
+                        )
                         perf = val_results['perf']
 
                         if hasattr(self.task, 'update'):
@@ -108,6 +239,7 @@ class LearningMixin:
                             best_perf = perf
                             best_policy_params = self.policy_net.get_state_dict_numpy()
                             best_baseline_params = self.baseline_net.get_state_dict_numpy()
+                            best_value_pop_feedback_state = self._value_pop_feedback_state()
                             record['new_best'] = True
                         else:
                             record['new_best'] = False
@@ -124,11 +256,13 @@ class LearningMixin:
                             'baseline_masks': self.baseline_net.masks,
                             'current_policy_params': self.policy_net.get_state_dict_numpy(),
                             'current_baseline_params': self.baseline_net.get_state_dict_numpy(),
+                            'value_pop_feedback_state': self._value_pop_feedback_state(),
                             'best_iter': best_iter,
                             'best_reward': best_reward,
                             'best_perf': best_perf,
                             'best_policy_params': best_policy_params,
                             'best_baseline_params': best_baseline_params,
+                            'best_value_pop_feedback_state': best_value_pop_feedback_state,
                             'rng_state': rng_state,
                             'training_history': training_history,
                             'trials_tot': trials_tot,
@@ -139,7 +273,8 @@ class LearningMixin:
                             'kappa_dist': self.kappa_dist,
                             'kappa_dist_params': self.kappa_dist_params,
                             'kappa_neurons': self.kappa_neurons.cpu().numpy() if self.kappa_mode == 'per_neuron' else None,
-                            'kappa': self.kappa  # Save scalar kappa value
+                            'kappa': self.kappa,  # Save scalar kappa value
+                            'recent_rpe_state': self.recent_rpe_state,
                         }
                         utils.save(savefile, save)
 
@@ -160,6 +295,9 @@ class LearningMixin:
                         error = torch.sqrt(torch.sum((Z_b_error - V)**2 * val_results['M']) /
                                           torch.sum(val_results['M'])).item()
                         items['Prediction error'] = f'{error}'
+
+                        items.update(self._policy_named_input_win_norms())
+                        items.update(self._recent_rpe_modulation_diagnostics(val_results))
 
                         # ==========================================
                         # CRITIC CAPACITY DIAGNOSTICS
@@ -462,6 +600,13 @@ class LearningMixin:
             context = (rpe * mask).sum(dim=0) / valid_steps
             return context, rpe
 
+        if self.config.get('use_value_modulation', False) and 'Value_Modulation' in results:
+            value_mod = results['Value_Modulation']
+            mask = results['M']
+            valid_steps = mask.sum(dim=0).clamp(min=1.0)
+            context = (value_mod * mask).sum(dim=0) / valid_steps
+            return context, value_mod
+
         return results.get('contexts'), None
 
     def _modulate_policy_rates(self, rates, context_signal, context_timeseries=None, start=0):
@@ -478,12 +623,63 @@ class LearningMixin:
         ]
         return torch.stack(modulated, dim=0)
 
+    def _choice_action_indices(self):
+        """Return policy action indices representing value-bearing alternatives."""
+        choice_indices = [
+            index for name, index in self.config['actions'].items()
+            if str(name).upper().startswith('CHOOSE')
+        ]
+        if not choice_indices:
+            raise ValueError(
+                "pathway_specific_plasticity requires actions named CHOOSE-*"
+            )
+        return choice_indices
+
+    def _value_choice_mask(self, results, choice_indices=None):
+        """Return timesteps where a non-aborted value-bearing choice was made."""
+        if choice_indices is None:
+            choice_indices = self._choice_action_indices()
+        A = results['A']
+        R = results['R']
+        M = results['M']
+        chose = torch.sum(A[..., choice_indices], dim=-1) > 0
+        # In this task, choice rewards are nonnegative; a negative CHOOSE
+        # reward identifies a premature fixation/stimulus abort.
+        valid_choice = chose & (R >= 0)
+        return valid_choice.to(dtype=M.dtype) * M
+
+    def _opal_choice_advantages(self, delta, eta_plus, eta_minus):
+        """
+        Return policy-objective coefficients for OpAL choice plasticity.
+
+        D2 already enters the logits as ``-N``. It therefore uses a positive
+        delta coefficient here: autograd through the subtraction turns
+        positive prediction errors into reduced N and negative errors into
+        increased N.
+        """
+        alpha_d1 = float(self.config.get('opal_alpha_d1', 1.0))
+        alpha_d2 = float(self.config.get('opal_alpha_d2', 1.0))
+        d1_negative_scale = float(self.config.get('opal_d1_negative_scale', 1.0))
+        d2_positive_scale = float(self.config.get('opal_d2_positive_scale', 1.0))
+
+        positive_mask = (delta > 0).to(delta.dtype)
+        negative_mask = (delta < 0).to(delta.dtype)
+        zero_mask = 1.0 - positive_mask - negative_mask
+
+        d1_scale = positive_mask + d1_negative_scale * negative_mask + zero_mask
+        d2_scale = negative_mask + d2_positive_scale * positive_mask + zero_mask
+        return (
+            alpha_d1 * d1_scale * eta_plus * delta,
+            alpha_d2 * d2_scale * eta_minus * delta,
+        )
+
     def _apply_actor_weight_learning_modulation(self):
             """
             Multiply actor output-weight gradients by current actor weight strength.
 
             This optional three-factor modifier keeps the existing policy-gradient
-            update, then adds a postsynaptic/current-actor-weight factor on Wout.
+            update, then adds a current-actor-weight factor on Wout. Positive
+            OpAL readouts use their effective G/N strengths, softplus(Wout_raw).
             """
             if not self.config.get('actor_weight_learning_modulation', False):
                 return
@@ -497,7 +693,10 @@ class LearningMixin:
             normalize = self.config.get('actor_weight_learning_normalize', True)
 
             with torch.no_grad():
-                strength = torch.abs(Wout.detach()) + floor
+                if self.policy_net.config.get('positive_policy_readout', False):
+                    strength = self.policy_net._effective_output_weights().detach() + floor
+                else:
+                    strength = torch.abs(Wout.detach()) + floor
                 if normalize:
                     strength = strength / strength.mean().clamp_min(1e-8)
                 if max_factor is not None:
@@ -542,38 +741,118 @@ class LearningMixin:
                 dopamine_signal=recurrent_dopamine
             )
 
-            r_0 = self.policy_net.firing_rate(x0)
+            r_0_unmod = self.policy_net.policy_rates(x0)
             r_0 = self._modulate_policy_rates(
-                r_0,
+                r_0_unmod,
                 context_signal,
                 context_timeseries=context_timeseries,
                 start=0
             )
             if self.policy_dropout is not None:
                 r_0 = self.policy_dropout(r_0)
-            log_z_0 = self.policy_net.log_output(r_0)
 
-            r_pred = self.policy_net.firing_rate(states)
+            r_pred_unmod = self.policy_net.policy_rates(states)
             r_pred = self._modulate_policy_rates(
-                r_pred,
+                r_pred_unmod,
                 context_signal,
                 context_timeseries=context_timeseries,
                 start=1
             )
             if self.policy_dropout is not None:
                 r_pred = self.policy_dropout(r_pred)
-            log_z_pred = self.policy_net.log_output(r_pred)
 
-            # 6. Compute log probabilities of chosen actions
-            logpi_0 = torch.sum(log_z_0 * A[0], dim=-1)
-            logpi_t = torch.sum(log_z_pred * A[1:], dim=-1)
-            logpi_all = torch.cat([logpi_0.unsqueeze(0), logpi_t], dim=0)
+            logit_signal_0 = context_timeseries[0] if context_timeseries is not None else context_signal
+            logit_signal_t = context_timeseries[1:] if context_timeseries is not None else context_signal
 
-            # 7. REINFORCE objective with SCALED advantage
-            weighted_logpi = logpi_all * scaled_advantage * M
+            def chosen_logpi(pathway_gradient=None):
+                log_z0 = self.policy_net.log_output(
+                    r_0,
+                    pathway_gradient=pathway_gradient,
+                    control_r=r_0_unmod,
+                    modulation_signal=logit_signal_0
+                )
+                log_z = self.policy_net.log_output(
+                    r_pred,
+                    pathway_gradient=pathway_gradient,
+                    control_r=r_pred_unmod,
+                    modulation_signal=logit_signal_t
+                )
+                logpi_0 = torch.sum(log_z0 * A[0], dim=-1)
+                logpi_t = torch.sum(log_z * A[1:], dim=-1)
+                return torch.cat([logpi_0.unsqueeze(0), logpi_t], dim=0)
+
+            if self.config.get('pathway_specific_plasticity', False):
+                if not self.policy_net.uses_opponent_readout():
+                    raise ValueError(
+                        "pathway_specific_plasticity requires use_opponent_modulation "
+                        "or positive_policy_readout"
+                    )
+
+                # Both pathways receive every PE. Because D2 is subtracted
+                # from logits, the same PE coefficient induces the opposite
+                # N-weight update required by OpAL.
+                d1_advantage, d2_advantage = self._opal_choice_advantages(
+                    delta, eta_plus, eta_minus
+                )
+                choice_indices = self._choice_action_indices()
+                non_choice_indices = [
+                    i for i in range(self.n_actions) if i not in choice_indices
+                ]
+                if len(non_choice_indices) != 1:
+                    raise ValueError(
+                        "pathway_specific_plasticity currently requires exactly "
+                        "one control action outside CHOOSE-*"
+                )
+                control_index = non_choice_indices[0]
+                choice_mask = self._value_choice_mask(results, choice_indices)
+
+                def policy_logits(pathway_gradient=None):
+                    logits_0 = self.policy_net.output_layer(
+                        r_0,
+                        return_logits=True,
+                        pathway_gradient=pathway_gradient,
+                        control_r=r_0_unmod,
+                        modulation_signal=logit_signal_0
+                    )
+                    logits_t = self.policy_net.output_layer(
+                        r_pred,
+                        return_logits=True,
+                        pathway_gradient=pathway_gradient,
+                        control_r=r_pred_unmod,
+                        modulation_signal=logit_signal_t
+                    )
+                    return torch.cat([logits_0.unsqueeze(0), logits_t], dim=0)
+
+                def conditional_choice_logpi(pathway_gradient=None):
+                    choice_logits = policy_logits(pathway_gradient)[..., choice_indices]
+                    log_choice = F.log_softmax(choice_logits, dim=-1)
+                    return torch.sum(log_choice * A[..., choice_indices], dim=-1)
+
+                logits = policy_logits()
+                log_norm = torch.logsumexp(logits, dim=-1)
+                chose = torch.sum(A[..., choice_indices], dim=-1) > 0
+                log_p_choose = torch.logsumexp(logits[..., choice_indices], dim=-1) - log_norm
+                log_p_control = logits[..., control_index] - log_norm
+                timing_logpi = torch.where(chose, log_p_choose, log_p_control)
+
+                # Keep action-timing/control learning ordinary. Restrict opponent
+                # plasticity to which value alternative is selected once choosing.
+                timing_weighted_logpi = timing_logpi * scaled_advantage * M
+                choice_weighted_logpi = (
+                    conditional_choice_logpi('d1') * d1_advantage
+                    + conditional_choice_logpi('d2') * d2_advantage
+                    + conditional_choice_logpi('bias') * scaled_advantage
+                ) * choice_mask
+                weighted_logpi = timing_weighted_logpi + choice_weighted_logpi
+            else:
+                weighted_logpi = chosen_logpi() * scaled_advantage * M
+
+            # 7. REINFORCE objective with dopamine/context-scaled plasticity
             J = torch.sum(weighted_logpi) / B_size
 
             reg = self.policy_net.get_regs(x0, states, M[:-1])
+            r_readout = torch.cat([r_0.unsqueeze(0), r_pred], dim=0)
+            reg = reg + self.policy_net.get_readout_regs(r_readout, M)
             loss = -J + reg
 
             # 8. Gradient update

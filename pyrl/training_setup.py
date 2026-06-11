@@ -15,6 +15,106 @@ def resolve_device(device=None):
 
 
 class SetupMixin:
+    def _attach_value_population_feedback_metadata(self):
+        """Expose critic-feedback input metadata on the policy network."""
+        if not hasattr(self, 'policy_net'):
+            return
+        self.policy_net.value_pop_input_dim = self._policy_value_population_feature_dim()
+        self.policy_net.value_pop_current_d1_gain = 1.0
+        self.policy_net.value_pop_current_d2_gain = 1.0
+        self.policy_net.value_pop_current_phase = 'all'
+
+    def _setup_value_population_feedback_modules(self, saved=None):
+        """Initialize optional critic-population-to-policy bottleneck projections."""
+        self.value_pop_proj_d1 = None
+        self.value_pop_proj_d2 = None
+
+        if not self.config.get('policy_value_population_feedback', False):
+            return
+
+        bottleneck_dim = int(self.config.get('policy_value_population_bottleneck_dim', 8))
+        self.value_pop_bottleneck_dim = bottleneck_dim
+
+        self.value_pop_proj_d1 = nn.Linear(self.baseline_net.N, bottleneck_dim)
+        self.value_pop_proj_d2 = nn.Linear(self.baseline_net.N, bottleneck_dim)
+
+        if saved is not None:
+            self.value_pop_proj_d1.load_state_dict(saved['d1'])
+            self.value_pop_proj_d2.load_state_dict(saved['d2'])
+
+        self.value_pop_proj_d1.to(self.device)
+        self.value_pop_proj_d2.to(self.device)
+
+    def _policy_value_population_feature_dim(self):
+        """Return the number of policy-input channels added by value-population feedback."""
+        if not self.config.get('policy_value_population_feedback', False):
+            return 0
+        return 2 * int(self.config.get('policy_value_population_bottleneck_dim', 8))
+
+    def _augment_policy_win_mask(self, config, policy_nin):
+        """Return a Win mask with D1/D2-specific routing for value-population feedback channels."""
+        if not config.get('policy_value_population_feedback', False):
+            return config['Win_mask']
+
+        network_type = config['network_type']
+        if network_type == 'gru':
+            ncols = 3 * config['N']
+        else:
+            ncols = config['N']
+
+        base_mask = config['Win_mask']
+        if base_mask is None:
+            full_mask = np.ones((policy_nin, ncols), dtype=np.float32)
+        else:
+            full_mask = np.ones((policy_nin, ncols), dtype=np.float32)
+            rows = min(base_mask.shape[0], policy_nin)
+            cols = min(base_mask.shape[1], ncols)
+            full_mask[:rows, :cols] = base_mask[:rows, :cols]
+
+        population_dim = self._policy_value_population_feature_dim()
+        base_rows = policy_nin - population_dim
+        half_N = config['N'] // 2
+        split = population_dim // 2
+
+        # Zero out added rows first, then route D1 and D2 bottleneck channels
+        # exclusively to their actor-pathway halves.
+        full_mask[base_rows:, :] = 0.0
+        if network_type == 'gru':
+            d1_cols = np.concatenate([
+                np.arange(0, half_N),
+                np.arange(config['N'], config['N'] + half_N),
+                np.arange(2 * config['N'], 2 * config['N'] + half_N),
+            ])
+            d2_cols = np.concatenate([
+                np.arange(half_N, config['N']),
+                np.arange(config['N'] + half_N, 2 * config['N']),
+                np.arange(2 * config['N'] + half_N, 3 * config['N']),
+            ])
+        else:
+            d1_cols = np.arange(0, half_N)
+            d2_cols = np.arange(half_N, config['N'])
+
+        full_mask[base_rows:base_rows + split, d1_cols] = 1.0
+        full_mask[base_rows + split:base_rows + population_dim, d2_cols] = 1.0
+        return full_mask
+
+    def _policy_value_population_features(self, critic_rates):
+        """Project detached critic activity into small D1/D2-specific feedback features."""
+        if self.value_pop_proj_d1 is None or self.value_pop_proj_d2 is None:
+            return None
+
+        with torch.no_grad():
+            if critic_rates.dim() == 1:
+                critic_rates = critic_rates.unsqueeze(0)
+                squeeze = True
+            else:
+                squeeze = False
+
+            d1 = self.value_pop_proj_d1(critic_rates.detach())
+            d2 = self.value_pop_proj_d2(critic_rates.detach())
+            features = torch.cat([d1, d2], dim=-1)
+            return features.squeeze(0) if squeeze else features
+
     def _load_from_file(self, savefile, dt, load):
         """Load model from saved file."""
         save = utils.load(savefile)
@@ -30,6 +130,10 @@ class SetupMixin:
         # Which parameters to load?
         params_p = save['best_policy_params'] if load == 'best' else save['current_policy_params']
         params_b = save['best_baseline_params'] if load == 'best' else save['current_baseline_params']
+        value_pop_feedback_state = (
+            save.get('best_value_pop_feedback_state')
+            if load == 'best' else save.get('value_pop_feedback_state')
+        )
 
         # Masks
         masks_p = save.get('policy_masks', {})
@@ -40,7 +144,11 @@ class SetupMixin:
         self.policy_config['alpha'] = alpha
         for key in (
             'use_opponent_modulation',
+            'use_value_modulation',
+            'use_value_modulation_shared_gain',
             'positive_policy_readout',
+            'positive_readout_weight_l2',
+            'opponent_pull_l2',
             'dopamine_modulation_mode',
             'dopamine_hill_base_da',
             'dopamine_hill_da_range',
@@ -65,6 +173,8 @@ class SetupMixin:
                                           self.config['network_type'])]
         self.baseline_net = Network(self.baseline_config, params=params_b,
                                     masks=masks_b, name='baseline')
+        self._attach_value_population_feedback_metadata()
+        self._setup_value_population_feedback_modules(value_pop_feedback_state)
 
         # Store loaded kappa configuration (will be used in _setup_kappa)
         self.loaded_kappa_mode = save.get('kappa_mode', 'single')
@@ -90,20 +200,32 @@ class SetupMixin:
         # Leak
         alpha = self.dt / config['tau']
 
+        policy_feedback_nin = int(config.get('policy_value_feedback', False))
+        policy_feedback_nin += self._policy_value_population_feature_dim()
+        policy_nin = config['Nin'] + policy_feedback_nin
+
         # Policy network configuration
         K = config['p0'] * config['N']
         self.policy_config = {
-            'Nin': config['Nin'],
+            'Nin': policy_nin,
             'N': config['N'],
             'Nout': config['Nout'],
             'p0': config['p0'],
             'rho': config['rho'],
             'f_out': 'softmax',
-            'Win': config['Win'] * np.sqrt(K) / config['Nin'],
-            'Win_mask': config['Win_mask'],
+            'Win': config['Win'] * np.sqrt(K) / policy_nin,
+            'Win_mask': self._augment_policy_win_mask(config, policy_nin),
             'bout': config['bout'],
             'use_opponent_modulation': config.get('use_opponent_modulation', False),
+            'use_value_modulation': config.get('use_value_modulation', False),
+            'use_value_modulation_shared_gain': config.get('use_value_modulation_shared_gain', False),
             'positive_policy_readout': config.get('positive_policy_readout', False),
+            'positive_readout_weight_l2': config.get('positive_readout_weight_l2', 0.0),
+            'opponent_pull_l2': config.get('opponent_pull_l2', 0.0),
+            'exclude_control_action_from_dopamine_modulation': config.get(
+                'exclude_control_action_from_dopamine_modulation', False
+            ),
+            'actions': config.get('actions'),
             'fix': config['fix'],
             'L2_r': config['L2_r'],
             'activity_balance': config.get('activity_balance', 0),
@@ -135,7 +257,7 @@ class SetupMixin:
         K = config['baseline_p0'] * config['N']
         baseline_Nin = self.policy_net.N + len(config['actions'])
         if config.get('baseline_include_state', False):
-            baseline_Nin += config['Nin']
+            baseline_Nin += policy_nin
 
         self.baseline_config = {
             'Nin': baseline_Nin,
@@ -158,11 +280,30 @@ class SetupMixin:
 
         Network = Networks[config.get('baseline_network_type', config['network_type'])]
         self.baseline_net = Network(self.baseline_config, seed=config['baseline_seed'], name='baseline')
+        self._attach_value_population_feedback_metadata()
+        self._setup_value_population_feedback_modules()
 
     def _setup_training(self):
         """Setup training parameters and RNG."""
         # Network structure
-        self.Nin = self.config['Nin']
+        self.task_Nin = self.config['Nin']
+        self.policy_value_feedback = self.config.get('policy_value_feedback', False)
+        self.policy_value_population_feedback = self.config.get(
+            'policy_value_population_feedback', False
+        )
+        self.value_modulation_start_iter = int(self.config.get('value_modulation_start_iter', 0))
+        self.value_modulation_ramp_iters = int(self.config.get('value_modulation_ramp_iters', 0))
+        self.value_modulation_active = not self.config.get('use_value_modulation', False) or (
+            self.value_modulation_start_iter <= 0
+        )
+        self.value_modulation_scale = 1.0 if self.value_modulation_active else 0.0
+        self.use_recent_rpe_modulation = self.config.get('use_recent_rpe_modulation', False)
+        self.recent_rpe_decay = float(self.config.get('recent_rpe_decay', 0.7))
+        self.recent_rpe_gain = float(self.config.get('recent_rpe_gain', 0.2))
+        self.recent_rpe_clamp = float(self.config.get('recent_rpe_clamp', 0.5))
+        self.recent_rpe_phase = self.config.get('recent_rpe_phase', 'decision')
+        self.recent_rpe_state = 0.0
+        self.Nin = self.policy_config['Nin']
         self.N = self.config['N']
         self.Nout = self.config['Nout']
         self.n_actions = len(self.config['actions'])

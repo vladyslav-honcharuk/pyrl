@@ -5,11 +5,15 @@ PYTHON="${PYTHON:-python3}"
 TASK="tasks/gambling.py"
 TRAIN="scripts/training/train.py"
 PLOT="scripts/plotting/gambling.py"
-DATA_ROOT="data_progress2"
+DATA_ROOT="data_progression3"
+CONDITION_DEFS="scripts/gambling_condition_defs.bash"
 RERUN_TRIALS=0
 SKIP_TRIALS=0
 PLOT_BEHAVIOR=0
 TARGETS=()
+
+# shellcheck source=/dev/null
+source "$CONDITION_DEFS"
 
 for arg in "$@"; do
   case "$arg" in
@@ -39,6 +43,13 @@ trial_activity_file() {
   printf '%s/%s/trials/%s/trials_activity.pkl' "$DATA_ROOT" "$group" "$name"
 }
 
+model_file() {
+  local group="$1"
+  local suffix="$2"
+  local name="gambling${suffix}"
+  printf '%s/%s/weights/%s/%s.pkl' "$DATA_ROOT" "$group" "$name" "$name"
+}
+
 plot_model() {
   local group="$1"
   local suffix="$2"
@@ -48,6 +59,21 @@ plot_model() {
   "$PYTHON" "$TRAIN" "$TASK" \
     --data-root "$DATA_ROOT/$group" \
     --suffix "$suffix" \
+    run "$PLOT" "$action" "$@"
+}
+
+plot_model_from_source() {
+  local group="$1"
+  local suffix="$2"
+  local load_group="$3"
+  local load_suffix="$4"
+  local action="$5"
+  shift 5
+
+  "$PYTHON" "$TRAIN" "$TASK" \
+    --data-root "$DATA_ROOT/$group" \
+    --suffix "$suffix" \
+    --load-savefile "$(model_file "$load_group" "$load_suffix")" \
     run "$PLOT" "$action" "$@"
 }
 
@@ -82,9 +108,12 @@ clean_context_trials() {
   local trials_dir="$DATA_ROOT/$group/trials/$name"
 
   if [[ "$RERUN_TRIALS" == "1" && -d "$trials_dir" ]]; then
-    echo "Cleaning existing context/opto trial files due to --rerun-trials flag..."
+    echo "Cleaning existing sweep trial files due to --rerun-trials flag..."
     rm -f "$trials_dir"/trials_activity_ctx*.pkl
     rm -f "$trials_dir"/trials_activity_opto*.pkl
+    rm -f "$trials_dir"/trials_activity_vfb*.pkl
+    rm -f "$trials_dir"/trials_activity_vpopstim_*.pkl
+    rm -f "$trials_dir"/trials_activity_rrpe*.pkl
   fi
 }
 
@@ -111,13 +140,20 @@ plot_choice_probability_curves() {
   plot_model "$group" "$suffix" "choice-probability-curves"
 }
 
-plot_basic() {
-  ensure_trials "basic_default" "_basic_default" 1
-  plot_behavior "basic_default" "_basic_default"
-  plot_proportion_chosen "basic_default" "_basic_default"
-  plot_choice_probability_curves "basic_default" "_basic_default"
-  plot_model "basic_default" "_basic_default" "kappa-single" 0.0 1
+plot_pathway_ev_asymmetry() {
+  local group="$1"
+  local suffix="$2"
+
+  ensure_trials "$group" "$suffix" 1
+  plot_model "$group" "$suffix" "pathway-ev-asymmetry"
 }
+
+# Naming guide mirrors training.bash:
+# - tonic: direct task context input through the normal sensory/input channel.
+# - hidden_tonic: sampled dopamine context during training without a sensory CONTEXT input.
+# - vta_phasic_natural: natural critic-derived RPE drives D1/D2 dopamine modulation.
+# - vta_offset: sampled tonic VTA dopamine offset; RPE gain is set to 0.
+# - vta_phasic/opto: artificial VTA output stimulation during plotting/inference.
 
 plot_single_model() {
   local group="$1"
@@ -139,19 +175,172 @@ plot_context_only_model() {
   plot_behavior "$group" "$suffix"
   plot_proportion_chosen "$group" "$suffix"
   plot_choice_probability_curves "$group" "$suffix"
-  plot_model "$group" "$suffix" "context-sweep-0p2"
+  plot_model "$group" "$suffix" "context-sweep-0p1"
 }
 
-plot_regular_context() {
-  plot_context_only_model "regular_context" "_regular_context"
+plot_context_only_model_from_source() {
+  local group="$1"
+  local suffix="$2"
+  local load_group="$3"
+  local load_suffix="$4"
+  local action="${5:-context-sweep-0p1}"
+
+  clean_context_trials "$group" "$suffix"
+  plot_model_from_source "$group" "$suffix" "$load_group" "$load_suffix" "$action"
 }
 
-plot_context_d1d2() {
-  plot_context_only_model "context_d1d2" "_context_d1d2"
+plot_opto_model() {
+  local group="$1"
+  local suffix="$2"
+
+  clean_context_trials "$group" "$suffix"
+  plot_model "$group" "$suffix" "opto-sweep-0p1"
 }
 
-plot_d1d2_only() {
-  plot_single_model "d1d2_only" "_d1d2_only"
+plot_opto_zero_rpe_model_from_source() {
+  local group="$1"
+  local suffix="$2"
+  local load_group="$3"
+  local load_suffix="$4"
+
+  clean_context_trials "$group" "$suffix"
+  plot_model_from_source "$group" "$suffix" "$load_group" "$load_suffix" "opto-sweep-0p1-zero-rpe"
+}
+
+plot_pathway_gain_model() {
+  local group="$1"
+  local suffix="$2"
+  local load_group="$3"
+  local load_suffix="$4"
+  local sweep_mode="$5"
+
+  clean_context_trials "$group" "$suffix"
+  plot_model_from_source "$group" "$suffix" "$load_group" "$load_suffix" "pathway-gain-sweep" "$sweep_mode"
+}
+
+plot_condition() {
+  local target="$1"
+  local canonical
+
+  if ! condition_exists "$target"; then
+    echo "Unknown plotting condition: $target" >&2
+    return 2
+  fi
+
+  canonical="$(canonical_condition "$target")"
+  if [[ "$canonical" == "d1d2_v" ]]; then
+    plot_d1d2_v
+    return
+  fi
+
+  condition_group_suffix "$target"
+  case "$CONDITION_PLOT_MODE" in
+    context)
+      plot_context_only_model "$CONDITION_GROUP" "$CONDITION_SUFFIX"
+      ;;
+    opto)
+      plot_opto_model "$CONDITION_GROUP" "$CONDITION_SUFFIX"
+      ;;
+    opto_zero_rpe)
+      plot_opto_zero_rpe_model_from_source \
+        "$CONDITION_GROUP" \
+        "$CONDITION_SUFFIX" \
+        "$CONDITION_LOAD_GROUP" \
+        "$CONDITION_LOAD_SUFFIX"
+      ;;
+    pathway_gain)
+      plot_pathway_gain_model \
+        "$CONDITION_GROUP" \
+        "$CONDITION_SUFFIX" \
+        "$CONDITION_LOAD_GROUP" \
+        "$CONDITION_LOAD_SUFFIX" \
+        "$CONDITION_SWEEP_MODE"
+      ;;
+    *)
+      plot_single_model "$CONDITION_GROUP" "$CONDITION_SUFFIX"
+      ;;
+  esac
+}
+
+plot_condition_pathway_ev_asymmetry() {
+  local target="$1"
+
+  if ! condition_exists "$target"; then
+    echo "Unknown pathway-EV condition: $target" >&2
+    return 2
+  fi
+
+  condition_group_suffix "$target"
+  plot_pathway_ev_asymmetry "$CONDITION_GROUP" "$CONDITION_SUFFIX"
+}
+
+plot_d1d2_v() {
+  plot_context_only_model "d1d2_v" "_d1d2_v"
+  plot_context_only_model_from_source \
+    "d1d2_v_no_v" \
+    "_d1d2_v_no_v" \
+    "d1d2_v" \
+    "_d1d2_v" \
+    "context-sweep-0p1-no-v"
+}
+
+plot_d1d2_v_no_v() {
+  plot_context_only_model_from_source \
+    "d1d2_v_no_v" \
+    "_d1d2_v_no_v" \
+    "d1d2_v" \
+    "_d1d2_v" \
+    "context-sweep-0p1-no-v"
+}
+
+plot_d1d2_v_feedback() {
+  clean_context_trials "d1d2_v_feedback" "_d1d2_v_feedback"
+  plot_model_from_source \
+    "d1d2_v_feedback" \
+    "_d1d2_v_feedback" \
+    "d1d2_v" \
+    "_d1d2_v" \
+    "value-feedback-sweep"
+}
+
+plot_d1d2_recent_rpe() {
+  plot_single_model "d1d2_recent_rpe_g01" "_d1d2_recent_rpe_g01"
+  plot_model "d1d2_recent_rpe_g01" "_d1d2_recent_rpe_g01" "recent-rpe-sequential"
+}
+
+plot_d1d2_recent_rpe_stim() {
+  clean_context_trials "d1d2_recent_rpe_g01_stim" "_d1d2_recent_rpe_g01_stim"
+  plot_model_from_source \
+    "d1d2_recent_rpe_g01_stim" \
+    "_d1d2_recent_rpe_g01_stim" \
+    "d1d2_recent_rpe_g01" \
+    "_d1d2_recent_rpe_g01" \
+    "recent-rpe-sweep"
+}
+
+plot_d1d2_recent_rpe_cuedec() {
+  plot_single_model "d1d2_recent_rpe_g01_cuedec" "_d1d2_recent_rpe_g01_cuedec"
+  plot_model "d1d2_recent_rpe_g01_cuedec" "_d1d2_recent_rpe_g01_cuedec" "recent-rpe-sequential"
+}
+
+plot_d1d2_recent_rpe_cuedec_stim() {
+  clean_context_trials "d1d2_recent_rpe_g01_cuedec_stim" "_d1d2_recent_rpe_g01_cuedec_stim"
+  plot_model_from_source \
+    "d1d2_recent_rpe_g01_cuedec_stim" \
+    "_d1d2_recent_rpe_g01_cuedec_stim" \
+    "d1d2_recent_rpe_g01_cuedec" \
+    "_d1d2_recent_rpe_g01_cuedec" \
+    "recent-rpe-sweep"
+}
+
+plot_d1d2_vpop_stim() {
+  clean_context_trials "d1d2_vpop_stim" "_d1d2_vpop_stim"
+  plot_model_from_source \
+    "d1d2_vpop_stim" \
+    "_d1d2_vpop_stim" \
+    "d1d2_vpop" \
+    "_d1d2_vpop" \
+    "value-population-stim-sweep"
 }
 
 plot_hardwired_kappa() {
@@ -189,65 +378,43 @@ plot_hardwired_kappa_mega() {
   plot_model "hardwired_kappa_0.0" "_hardwired_kappa_0p0" "hardwired-kappa-mega"
 }
 
-plot_rpe_feedback() {
-  plot_single_model "phasic_rpe_d1d2" "_phasic_rpe_d1d2"
-}
-
-plot_rpe_feedback_legacy_name() {
-  plot_single_model "natural_rpe_feedback" "_rpe_feedback"
-}
-
-plot_phasic_rpe_d1d2_context() {
-  plot_context_only_model "phasic_rpe_d1d2_context" "_phasic_rpe_d1d2_context"
-}
-
-plot_tonic_vta_context() {
-  plot_single_model "tonic_vta_d1d2" "_tonic_vta_d1d2"
-}
-
-plot_tonic_vta_context_legacy_name() {
-  plot_single_model "tonic_vta_context" "_tonic_vta_context"
-}
-
-plot_tonic_vta_d1d2_context() {
-  plot_context_only_model "tonic_vta_d1d2_context" "_tonic_vta_d1d2_context"
-}
-
-plot_rpe_plus_vta_context() {
-  plot_single_model "phasic_rpe_vta_d1d2" "_phasic_rpe_vta_d1d2"
-}
-
-plot_rpe_plus_vta_context_legacy_name() {
-  plot_single_model "rpe_plus_vta_context" "_rpe_plus_vta_context"
-}
-
-plot_phasic_rpe_vta_d1d2_context() {
-  plot_context_only_model "phasic_rpe_vta_d1d2_context" "_phasic_rpe_vta_d1d2_context"
-}
-
 plot_all_model_variants() {
-  plot_basic
-  plot_regular_context
-  plot_context_d1d2
-  plot_d1d2_only
-  plot_rpe_feedback
-  plot_phasic_rpe_d1d2_context
-  plot_tonic_vta_context
-  plot_tonic_vta_d1d2_context
-  plot_rpe_plus_vta_context
-  plot_phasic_rpe_vta_d1d2_context
+  plot_condition basic
+  plot_condition tonic
+  plot_condition tonic_d1d2
+  plot_condition d1d2
+  plot_condition vta_phasic_natural_d1d2
+  plot_condition tonic_vta_phasic_natural_d1d2
+  plot_condition vta_offset_d1d2
+  plot_condition tonic_vta_offset_d1d2
+  plot_condition vta_phasic_natural_vta_offset_d1d2
+  plot_condition tonic_vta_phasic_natural_vta_offset_d1d2
 }
 
 if (( ${#TARGETS[@]} > 0 )); then
   for target in "${TARGETS[@]}"; do
+    if condition_exists "$target"; then
+      plot_condition "$target"
+      continue
+    fi
+    if [[ "$target" == *_pathway_ev_asymmetry ]]; then
+      base_target="${target%_pathway_ev_asymmetry}"
+      if condition_exists "$base_target"; then
+        plot_condition_pathway_ev_asymmetry "$base_target"
+        continue
+      fi
+    fi
     fn="plot_${target}"
     if ! declare -F "$fn" >/dev/null; then
       echo "Unknown plot target: $target" >&2
       echo "Available examples:" >&2
-      echo "  basic regular_context context_d1d2 d1d2_only" >&2
-      echo "  rpe_feedback phasic_rpe_d1d2_context" >&2
-      echo "  tonic_vta_context tonic_vta_d1d2_context" >&2
-      echo "  rpe_plus_vta_context phasic_rpe_vta_d1d2_context" >&2
+      echo "  basic tonic tonic_d1d2 d1d2 d1d2_plasticity d1d2_v d1d2_v_no_v d1d2_v_feedback d1d2_vpop_stim d1d2_recent_rpe d1d2_recent_rpe_stim d1d2_recent_rpe_cuedec d1d2_recent_rpe_cuedec_stim" >&2
+      echo "  d1d2_plasticity_symmetric_ctx d1d2_plasticity_d2_only_stim d1d2_plasticity_d1_only_stim" >&2
+      echo "  d1d2_plasticity_d2_only_suppress d1d2_plasticity_d1_only_suppress" >&2
+      echo "  hidden_tonic_d1d2_plasticity hidden_tonic_d1d2_plasticity_pathway_ev_asymmetry" >&2
+      echo "  vta_phasic_natural_d1d2 tonic_vta_phasic_natural_d1d2" >&2
+      echo "  vta_offset_d1d2 tonic_vta_offset_d1d2" >&2
+      echo "  vta_phasic_natural_vta_offset_d1d2 tonic_vta_phasic_natural_vta_offset_d1d2" >&2
       echo "  all_model_variants hardwired_kappa_mega finetuned_kappa_mega" >&2
       exit 2
     fi
@@ -257,15 +424,16 @@ if (( ${#TARGETS[@]} > 0 )); then
 fi
 
 # Pick the plots you want to run by uncommenting them.
-# plot_basic
-# plot_rpe_feedback
+# plot_condition basic
 
+# plot_condition d1d2
+# plot_condition d1d2_plasticity
+# plot_d1d2_v
+# plot_condition tonic
 
-
-# plot_d1d2_only
-
-# plot_regular_context
-plot_context_d1d2
+# plot_condition vta_phasic_natural_d1d2
+# plot_condition tonic_d1d2
+# plot_condition tonic_d1d2_plasticity
 
 # for kappa in -0.9 -0.8 -0.7 -0.6 -0.5 -0.4 -0.3 -0.2 -0.1 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9; do
 #   plot_finetuned_kappa "$kappa"
@@ -278,9 +446,9 @@ plot_context_d1d2
 # plot_hardwired_kappa_mega
 
 
-plot_phasic_rpe_d1d2_context
-plot_tonic_vta_context
-plot_tonic_vta_d1d2_context
-plot_rpe_plus_vta_context
-plot_phasic_rpe_vta_d1d2_context
-plot_all_model_variants
+# plot_condition tonic_vta_phasic_natural_d1d2
+# plot_condition vta_offset_d1d2
+# plot_condition tonic_vta_offset_d1d2
+# plot_condition vta_phasic_natural_vta_offset_d1d2
+# plot_condition tonic_vta_phasic_natural_vta_offset_d1d2
+# plot_all_model_variants

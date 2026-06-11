@@ -156,7 +156,8 @@ class SimpleRNN(RecurrentNetwork):
             return F.softplus(self.Wout)
         return self.Wout
 
-    def output_layer(self, r, temperature=None, return_logits=False):
+    def output_layer(self, r, temperature=None, return_logits=False, control_r=None,
+                     modulation_signal=None):
         """
         Apply output transformation with optional temperature scaling.
 
@@ -170,6 +171,9 @@ class SimpleRNN(RecurrentNetwork):
             If None, uses standard softmax (temperature=1.0).
         return_logits : bool
             If True, return raw logits before softmax. Default: False.
+        control_r : tensor, optional
+            Unmodulated rates used only for the single control action logit
+            when exclude_control_action_from_dopamine_modulation is enabled.
         """
         r_out = self._policy_readout_rates(r)
         Wout = self._effective_output_weights()
@@ -189,6 +193,24 @@ class SimpleRNN(RecurrentNetwork):
             # Standard computation: all neurons contribute additively
             logits = torch.matmul(r_out, Wout) + self.bout
 
+        control_index = self.control_action_index()
+        if control_index is not None and control_r is not None:
+            control_out = self._policy_readout_rates(control_r)
+            if self.config.get('use_opponent_modulation', False):
+                half_N = self.N // 2
+                control_d1 = torch.matmul(control_out[..., :half_N], Wout[:half_N, control_index:control_index + 1])
+                control_d2 = torch.matmul(control_out[..., half_N:], Wout[half_N:, control_index:control_index + 1])
+                control_logit = control_d1 - control_d2 + self.bout[control_index:control_index + 1]
+            else:
+                control_logit = (
+                    torch.matmul(control_out, Wout[:, control_index:control_index + 1])
+                    + self.bout[control_index:control_index + 1]
+                )
+            logits = logits.clone()
+            logits[..., control_index:control_index + 1] = control_logit
+
+        logits = self._apply_decision_precision_gain(logits, modulation_signal)
+
         if return_logits:
             return logits
 
@@ -206,7 +228,7 @@ class SimpleRNN(RecurrentNetwork):
         else:
             raise ValueError(f"Unknown output activation: {self.f_out}")
 
-    def log_output(self, r, temperature=None):
+    def log_output(self, r, temperature=None, control_r=None, modulation_signal=None):
         """
         Apply log output transformation with optional temperature scaling.
 
@@ -219,7 +241,12 @@ class SimpleRNN(RecurrentNetwork):
             Only used if f_out='softmax'.
             If None, uses standard log_softmax (temperature=1.0).
         """
-        logits = self.output_layer(r, return_logits=True)
+        logits = self.output_layer(
+            r,
+            return_logits=True,
+            control_r=control_r,
+            modulation_signal=modulation_signal
+        )
 
         if self.f_out == 'softmax':
             if temperature is not None:

@@ -1,0 +1,7 @@
+Recent-RPE sequential metrics
+prev_rpe_positive_frac	0.453526
+prev_rpe_negative_frac	0.546474
+risky_after_pos	0.515901	0.029707	283
+risky_after_neg	0.454545	0.026964	341
+win_stay	0.505618	0.052997	89
+lose_shift	0.556604	0.034119	212

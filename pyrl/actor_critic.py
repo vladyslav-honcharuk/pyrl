@@ -33,6 +33,15 @@ class ActorCriticTrainer(SetupMixin, RolloutMixin, LearningMixin):
         self.opto_stim_offset = self.config.get('opto_stim_offset', 0.0)
         self.opto_stim_gain = self.config.get('opto_stim_gain', 1.0)
         self.opto_stim_phase = self.config.get('opto_stim_phase', 'all')
+        self.value_pop_stim_d1_offset = self.config.get('value_pop_stim_d1_offset', 0.0)
+        self.value_pop_stim_d2_offset = self.config.get('value_pop_stim_d2_offset', 0.0)
+        self.value_pop_stim_phase = self.config.get('value_pop_stim_phase', 'all')
+        self.value_pop_current_d1_gain = self.config.get('value_pop_current_d1_gain', 1.0)
+        self.value_pop_current_d2_gain = self.config.get('value_pop_current_d2_gain', 1.0)
+        self.value_pop_current_phase = self.config.get('value_pop_current_phase', 'all')
+        self.recent_rpe_stim_offset = self.config.get('recent_rpe_stim_offset', 0.0)
+        self.recent_rpe_stim_gain = self.config.get('recent_rpe_stim_gain', 1.0)
+        self.recent_rpe_stim_phase = self.config.get('recent_rpe_stim_phase', 'all')
 
     def run_trials(self, *args, **kwargs):
         return self._run_trials(*args, **kwargs)

@@ -42,8 +42,8 @@ color_vector = np.array([
 
 # Training
 n_conditions = 25 * 25  # All possible pairs of left-right choices
-n_gradient   = 16  # Batch size for gradient updates
-n_validation = 500      # Increase to get more stable accuracy estimates
+n_gradient   = 32 # Batch size for gradient updates
+n_validation =500      # Increase to get more stable accuracy estimates
 
 # Input noise
 sigma = 0.1

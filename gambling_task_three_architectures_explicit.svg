@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="2600" height="1580" viewBox="0 0 2600 1580" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow-gray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#374151"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#dc2626"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#16a34a"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#d97706"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#9333ea"/>
+    </marker>
+    <filter id="shadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#000" flood-opacity="0.13"/>
+    </filter>
+    <style>
+      .title { font-family: Arial, Helvetica, sans-serif; font-size: 38px; font-weight: 700; fill: #111827; }
+      .subtitle { font-family: Arial, Helvetica, sans-serif; font-size: 20px; fill: #374151; }
+      .panel-title { font-family: Arial, Helvetica, sans-serif; font-size: 28px; font-weight: 700; fill: #111827; }
+      .section { font-family: Arial, Helvetica, sans-serif; font-size: 14px; font-weight: 700; fill: #6b7280; letter-spacing: .06em; }
+      .label { font-family: Arial, Helvetica, sans-serif; font-size: 17px; font-weight: 700; fill: #111827; }
+      .small { font-family: Arial, Helvetica, sans-serif; font-size: 14.5px; fill: #374151; }
+      .tiny { font-family: Arial, Helvetica, sans-serif; font-size: 12.8px; fill: #374151; }
+      .mono { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 14.2px; fill: #111827; }
+      .monoSmall { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 12.8px; fill: #111827; }
+      .panel { fill: #ffffff; stroke: #1f2937; stroke-width: 2; rx: 22; filter: url(#shadow); }
+      .box { fill: #f9fafb; stroke: #9ca3af; stroke-width: 1.7; rx: 15; }
+      .corebox { fill: #eef2ff; stroke: #4f46e5; stroke-width: 2; rx: 15; }
+      .inputbox { fill: #ecfeff; stroke: #0891b2; stroke-width: 2; rx: 15; }
+      .bluebox { fill: #eff6ff; stroke: #2563eb; stroke-width: 2.1; rx: 15; }
+      .redbox { fill: #fef2f2; stroke: #dc2626; stroke-width: 2.1; rx: 15; }
+      .greenbox { fill: #f0fdf4; stroke: #16a34a; stroke-width: 2.1; rx: 15; }
+      .yellowbox { fill: #fffbeb; stroke: #d97706; stroke-width: 1.9; rx: 15; }
+      .purplebox { fill: #faf5ff; stroke: #9333ea; stroke-width: 2; rx: 15; }
+      .mutebox { fill: #f3f4f6; stroke: #d1d5db; stroke-width: 1.5; rx: 14; }
+      .arrow { stroke: #374151; stroke-width: 2.7; fill: none; marker-end: url(#arrow-gray); }
+      .bluearrow { stroke: #2563eb; stroke-width: 2.7; fill: none; marker-end: url(#arrow-blue); }
+      .redarrow { stroke: #dc2626; stroke-width: 2.7; fill: none; marker-end: url(#arrow-red); }
+      .greenarrow { stroke: #16a34a; stroke-width: 2.7; fill: none; marker-end: url(#arrow-green); }
+      .orangearrow { stroke: #d97706; stroke-width: 2.7; fill: none; marker-end: url(#arrow-orange); }
+      .purplearrow { stroke: #9333ea; stroke-width: 2.7; fill: none; marker-end: url(#arrow-purple); }
+      .dash { stroke-dasharray: 8 7; }
+      .thin { stroke-width: 2; }
+    </style>
+  </defs>
+
+  <rect width="2600" height="1580" fill="#f3f4f6"/>
+
+  <text x="1300" y="58" text-anchor="middle" class="title">Gambling Task Actor-Critic Architectures</text>
+  <text x="1300" y="92" text-anchor="middle" class="subtitle">Task-specific diagram: 7-channel color input, 25 probability–reward options, 3 actions, separate value network, and D1/D2 actor variants.</text>
+
+  <!-- shared task specification -->
+  <rect x="120" y="120" width="2360" height="100" class="inputbox"/>
+  <text x="1300" y="151" text-anchor="middle" class="label">Exact task interface used here</text>
+  <text x="1300" y="179" text-anchor="middle" class="mono">u_t = [FIX, L_R,L_G,L_B, R_R,R_G,R_B] ∈ R⁷        actions = [FIXATE, CHOOSE_LEFT, CHOOSE_RIGHT] ∈ R³</text>
+  <text x="1300" y="204" text-anchor="middle" class="monoSmall">trial = fixation 25 steps → stimulus 25 steps → decision 26 steps; option identity is encoded by noisy RGB colors from a 5×5 probability × reward grid</text>
+
+  <!-- panels -->
+  <rect x="40" y="250" width="800" height="1210" class="panel"/>
+  <rect x="900" y="250" width="800" height="1210" class="panel"/>
+  <rect x="1760" y="250" width="800" height="1210" class="panel"/>
+
+  <text x="440" y="292" text-anchor="middle" class="panel-title">1. basic actor-critic</text>
+  <text x="1300" y="292" text-anchor="middle" class="panel-title">2. direct D1/D2 gain/context model</text>
+  <text x="2160" y="292" text-anchor="middle" class="panel-title">3. critic-RPE-driven D1/D2 model</text>
+
+  <!-- Column 1 Basic -->
+  <text x="80" y="335" class="section">INPUT AND RECURRENT ACTOR</text>
+  <rect x="80" y="355" width="720" height="82" class="inputbox"/>
+  <text x="440" y="385" text-anchor="middle" class="label">task input at time t</text>
+  <text x="440" y="412" text-anchor="middle" class="monoSmall">u_t=[FIX, L_RGB, R_RGB]; example stimulus: [1, .96,.11,.14, .39,.78,.84]</text>
+
+  <path d="M440 437 L440 475" class="arrow"/>
+
+  <rect x="80" y="475" width="720" height="115" class="corebox"/>
+  <text x="440" y="506" text-anchor="middle" class="label">policy GRU state</text>
+  <text x="440" y="533" text-anchor="middle" class="mono">xᵖ_t = GRU_policy(u_t, xᵖ_{t−1})</text>
+  <text x="440" y="560" text-anchor="middle" class="monoSmall">example xᵖ_t ∈ R¹⁰⁰ = [−1.2, 0.3, 1.0, ..., −0.1]</text>
+
+  <path d="M440 590 L440 628" class="arrow"/>
+
+  <text x="80" y="625" class="section">SIGNED ACTOR READOUT</text>
+  <rect x="80" y="645" width="350" height="118" class="box"/>
+  <text x="255" y="676" text-anchor="middle" class="label">policy rates</text>
+  <text x="255" y="703" text-anchor="middle" class="mono">rᵖ_t = firing_rate(xᵖ_t)</text>
+  <text x="255" y="730" text-anchor="middle" class="monoSmall">example: tanh(x) → [−.83,.29,.76,...]</text>
+
+  <rect x="450" y="645" width="350" height="118" class="box"/>
+  <text x="625" y="676" text-anchor="middle" class="label">unconstrained Wout</text>
+  <text x="625" y="703" text-anchor="middle" class="mono">Wout ∈ R¹⁰⁰ˣ³</text>
+  <text x="625" y="730" text-anchor="middle" class="monoSmall">entries can be + or − for each action</text>
+
+  <path d="M430 704 L450 704" class="arrow thin"/>
+  <path d="M440 763 L440 805" class="arrow"/>
+
+  <rect x="160" y="805" width="560" height="118" class="greenbox"/>
+  <text x="440" y="836" text-anchor="middle" class="label">3 action logits and policy</text>
+  <text x="440" y="864" text-anchor="middle" class="mono">z_t = rᵖ_t Wout + b_policy</text>
+  <text x="440" y="891" text-anchor="middle" class="monoSmall">z_t=[z_FIX,z_LEFT,z_RIGHT], example [2.4, 0.6, 1.1]</text>
+  <text x="440" y="915" text-anchor="middle" class="monoSmall">π_t = softmax(z_t) over [fixate,left,right]</text>
+
+  <text x="80" y="965" class="section">SEPARATE VALUE NETWORK / CRITIC</text>
+  <rect x="80" y="985" width="350" height="128" class="purplebox"/>
+  <text x="255" y="1016" text-anchor="middle" class="label">critic GRU state</text>
+  <text x="255" y="1043" text-anchor="middle" class="monoSmall">xᵛ_t = GRU_value(c_t,xᵛ_{t−1})</text>
+  <text x="255" y="1070" text-anchor="middle" class="monoSmall">c_t can include task input,</text>
+  <text x="255" y="1094" text-anchor="middle" class="monoSmall">policy rates, and action one-hot</text>
+
+  <rect x="450" y="985" width="350" height="128" class="purplebox"/>
+  <text x="625" y="1016" text-anchor="middle" class="label">value estimate</text>
+  <text x="625" y="1043" text-anchor="middle" class="mono">V_t = rᵛ_t Wv + bᵛ</text>
+  <text x="625" y="1070" text-anchor="middle" class="monoSmall">example V_t = 0.42</text>
+  <text x="625" y="1094" text-anchor="middle" class="monoSmall">used for advantage / RPE computation</text>
+
+  <path d="M430 1049 L450 1049" class="purplearrow thin"/>
+  <path d="M625 1113 L625 1160" class="purplearrow"/>
+
+  <rect x="450" y="1160" width="350" height="108" class="yellowbox"/>
+  <text x="625" y="1190" text-anchor="middle" class="label">learning signal</text>
+  <text x="625" y="1218" text-anchor="middle" class="monoSmall">δ_t = R_t + γV_{t+1} − V_t</text>
+  <text x="625" y="1243" text-anchor="middle" class="monoSmall">or A_t = return_t − V_t</text>
+
+  <path d="M625 1160 C710 1045, 705 925, 655 888" class="orangearrow dash"/>
+  <text x="736" y="1012" text-anchor="middle" class="tiny">affects learning only</text>
+
+  <rect x="80" y="1310" width="720" height="92" class="mutebox"/>
+  <text x="440" y="1341" text-anchor="middle" class="label">basic summary</text>
+  <text x="440" y="1368" text-anchor="middle" class="tiny">actor logits are a single signed readout; the critic estimates value and supplies δ/A for training,</text>
+  <text x="440" y="1391" text-anchor="middle" class="tiny">but δ does not modulate policy activity online.</text>
+
+  <!-- Column 2 Direct D1D2 Context -->
+  <text x="940" y="335" class="section">INPUT AND RECURRENT ACTOR</text>
+  <rect x="940" y="355" width="720" height="82" class="inputbox"/>
+  <text x="1300" y="385" text-anchor="middle" class="label">same gambling-task input</text>
+  <text x="1300" y="412" text-anchor="middle" class="monoSmall">u_t=[FIX, L_RGB, R_RGB] ∈ R⁷; actions remain [FIXATE, LEFT, RIGHT]</text>
+
+  <path d="M1300 437 L1300 475" class="arrow"/>
+
+  <rect x="940" y="475" width="720" height="115" class="corebox"/>
+  <text x="1300" y="506" text-anchor="middle" class="label">policy GRU state with pathway interpretation</text>
+  <text x="1300" y="533" text-anchor="middle" class="mono">xᵖ_t = [xᴰ¹_t | xᴰ²_t], each half length 50 when N=100</text>
+  <text x="1300" y="560" text-anchor="middle" class="monoSmall">example xᵖ_t=[−1.2,0.3,... | −0.5,0.8,...]</text>
+
+  <path d="M1300 590 L1300 628" class="arrow"/>
+
+  <text x="940" y="625" class="section">POSITIVE RATES, POSITIVE WEIGHTS, DIRECT CONTEXT</text>
+  <rect x="940" y="645" width="350" height="118" class="yellowbox"/>
+  <text x="1115" y="676" text-anchor="middle" class="label">positive actor rates</text>
+  <text x="1115" y="703" text-anchor="middle" class="mono">rᵖ_t = softplus(xᵖ_t)</text>
+  <text x="1115" y="730" text-anchor="middle" class="monoSmall">rᵖ_t ≥ 0; split into rᴰ¹,rᴰ²</text>
+
+  <rect x="1310" y="645" width="350" height="118" class="yellowbox"/>
+  <text x="1485" y="676" text-anchor="middle" class="label">positive actor weights</text>
+  <text x="1485" y="703" text-anchor="middle" class="mono">W⁺ = softplus(Wout)</text>
+  <text x="1485" y="730" text-anchor="middle" class="monoSmall">W⁺ ≥ 0 for all 3 actions</text>
+
+  <path d="M1290 704 L1310 704" class="arrow thin"/>
+
+  <rect x="1030" y="795" width="540" height="136" class="box"/>
+  <text x="1300" y="826" text-anchor="middle" class="label">manual/context dopamine signal directly sets D1/D2 gains</text>
+  <text x="1300" y="854" text-anchor="middle" class="mono">d_context ∈ [−0.9,0.9]</text>
+  <text x="1300" y="881" text-anchor="middle" class="monoSmall">rᴰ¹′ = clamp(rᴰ¹ · (1 + d_context·sᴰ¹) + d_context·bᴰ¹, 0)</text>
+  <text x="1300" y="906" text-anchor="middle" class="monoSmall">rᴰ²′ = clamp(rᴰ² · (1 − d_context·sᴰ²) + d_context·bᴰ², 0)</text>
+
+  <path d="M1115 763 C1115 790, 1155 790, 1192 795" class="bluearrow"/>
+  <path d="M1485 763 C1485 790, 1445 790, 1408 795" class="redarrow"/>
+
+  <text x="940" y="965" class="section">OPPONENT READOUT</text>
+  <rect x="940" y="985" width="350" height="118" class="bluebox"/>
+  <text x="1115" y="1016" text-anchor="middle" class="label">D1 / Go evidence</text>
+  <text x="1115" y="1043" text-anchor="middle" class="mono">g_t = rᴰ¹′ W⁺ᴰ¹</text>
+  <text x="1115" y="1070" text-anchor="middle" class="monoSmall">g_t ∈ R³ = [g_FIX,g_LEFT,g_RIGHT]</text>
+
+  <rect x="1310" y="985" width="350" height="118" class="redbox"/>
+  <text x="1485" y="1016" text-anchor="middle" class="label">D2 / NoGo evidence</text>
+  <text x="1485" y="1043" text-anchor="middle" class="mono">n_t = rᴰ²′ W⁺ᴰ²</text>
+  <text x="1485" y="1070" text-anchor="middle" class="monoSmall">n_t ∈ R³ = [n_FIX,n_LEFT,n_RIGHT]</text>
+
+  <path d="M1300 931 L1300 960" class="arrow"/>
+  <path d="M1115 1103 C1115 1145, 1228 1145, 1255 1175" class="bluearrow"/>
+  <path d="M1485 1103 C1485 1145, 1372 1145, 1345 1175" class="redarrow"/>
+
+  <rect x="1070" y="1175" width="460" height="105" class="greenbox"/>
+  <text x="1300" y="1206" text-anchor="middle" class="label">3 action logits</text>
+  <text x="1300" y="1234" text-anchor="middle" class="mono">z_t = g_t − n_t + b_policy</text>
+  <text x="1300" y="1261" text-anchor="middle" class="monoSmall">π_t = softmax(z_t) over [fixate,left,right]</text>
+
+  <text x="940" y="1310" class="section">VALUE NETWORK</text>
+  <rect x="940" y="1330" width="720" height="72" class="purplebox"/>
+  <text x="1300" y="1358" text-anchor="middle" class="label">critic remains separate</text>
+  <text x="1300" y="1384" text-anchor="middle" class="monoSmall">V_t = value_GRU(c_t)Wv+bᵛ; δ/A trains actor and critic, but direct context d_context is the online D1/D2 manipulation</text>
+
+  <!-- Column 3 RPE-driven D1D2 -->
+  <text x="1800" y="335" class="section">INPUT AND RECURRENT ACTOR</text>
+  <rect x="1800" y="355" width="720" height="82" class="inputbox"/>
+  <text x="2160" y="385" text-anchor="middle" class="label">same gambling-task input</text>
+  <text x="2160" y="412" text-anchor="middle" class="monoSmall">u_t=[FIX, L_RGB, R_RGB] ∈ R⁷; actions=[FIXATE, LEFT, RIGHT]</text>
+
+  <path d="M2160 437 L2160 475" class="arrow"/>
+
+  <rect x="1800" y="475" width="720" height="115" class="corebox"/>
+  <text x="2160" y="506" text-anchor="middle" class="label">policy GRU state with D1/D2 split</text>
+  <text x="2160" y="533" text-anchor="middle" class="mono">xᵖ_t = [xᴰ¹_t | xᴰ²_t], rᵖ_t=softplus(xᵖ_t), W⁺=softplus(Wout)</text>
+  <text x="2160" y="560" text-anchor="middle" class="monoSmall">same positive opponent actor as column 2</text>
+
+  <text x="1800" y="625" class="section">CRITIC DERIVES THE DOPAMINE/RPE SIGNAL</text>
+  <rect x="1800" y="645" width="350" height="138" class="purplebox"/>
+  <text x="1975" y="676" text-anchor="middle" class="label">value network</text>
+  <text x="1975" y="703" text-anchor="middle" class="monoSmall">xᵛ_t = GRU_value(c_t,xᵛ_{t−1})</text>
+  <text x="1975" y="730" text-anchor="middle" class="mono">V_t = rᵛ_t Wv + bᵛ</text>
+  <text x="1975" y="756" text-anchor="middle" class="monoSmall">predicts expected return / value</text>
+
+  <rect x="2170" y="645" width="350" height="138" class="yellowbox"/>
+  <text x="2345" y="676" text-anchor="middle" class="label">critic-derived RPE</text>
+  <text x="2345" y="703" text-anchor="middle" class="mono">δ_t = R_t + γV_{t+1} − V_t</text>
+  <text x="2345" y="730" text-anchor="middle" class="monoSmall">DA_t = clamp(k_RPE · δ_t, −0.9, 0.9)</text>
+  <text x="2345" y="756" text-anchor="middle" class="monoSmall">this DA_t, not a manual ratio, drives D1/D2</text>
+
+  <path d="M2150 714 L2170 714" class="purplearrow thin"/>
+
+  <path d="M2345 783 C2345 825, 2285 825, 2240 852" class="orangearrow"/>
+
+  <text x="1800" y="835" class="section">RPE MANIPULATION CHANGES D1/D2 THROUGH THE SAME FORMULAS</text>
+  <rect x="1800" y="865" width="350" height="150" class="bluebox"/>
+  <text x="1975" y="896" text-anchor="middle" class="label">D1 / Go modulation</text>
+  <text x="1975" y="923" text-anchor="middle" class="monoSmall">rᴰ¹ = softplus(xᴰ¹)</text>
+  <text x="1975" y="950" text-anchor="middle" class="monoSmall">rᴰ¹′ = clamp(rᴰ¹·(1 + DA_t·sᴰ¹)</text>
+  <text x="1975" y="974" text-anchor="middle" class="monoSmall">              + DA_t·bᴰ¹, 0)</text>
+  <text x="1975" y="998" text-anchor="middle" class="tiny">increasing δ_t increases D1 gain</text>
+
+  <rect x="2170" y="865" width="350" height="150" class="redbox"/>
+  <text x="2345" y="896" text-anchor="middle" class="label">D2 / NoGo modulation</text>
+  <text x="2345" y="923" text-anchor="middle" class="monoSmall">rᴰ² = softplus(xᴰ²)</text>
+  <text x="2345" y="950" text-anchor="middle" class="monoSmall">rᴰ²′ = clamp(rᴰ²·(1 − DA_t·sᴰ²)</text>
+  <text x="2345" y="974" text-anchor="middle" class="monoSmall">              + DA_t·bᴰ², 0)</text>
+  <text x="2345" y="998" text-anchor="middle" class="tiny">increasing δ_t decreases D2 gain</text>
+
+  <path d="M2240 852 C2160 835, 2075 835, 1975 865" class="bluearrow"/>
+  <path d="M2240 852 C2290 835, 2320 835, 2345 865" class="redarrow"/>
+
+  <text x="1800" y="1055" class="section">OPPONENT READOUT</text>
+  <rect x="1800" y="1080" width="350" height="112" class="bluebox"/>
+  <text x="1975" y="1111" text-anchor="middle" class="label">D1 evidence</text>
+  <text x="1975" y="1138" text-anchor="middle" class="mono">g_t = rᴰ¹′ W⁺ᴰ¹</text>
+  <text x="1975" y="1165" text-anchor="middle" class="monoSmall">3 components: fixate, left, right</text>
+
+  <rect x="2170" y="1080" width="350" height="112" class="redbox"/>
+  <text x="2345" y="1111" text-anchor="middle" class="label">D2 evidence</text>
+  <text x="2345" y="1138" text-anchor="middle" class="mono">n_t = rᴰ²′ W⁺ᴰ²</text>
+  <text x="2345" y="1165" text-anchor="middle" class="monoSmall">3 components: fixate, left, right</text>
+
+  <path d="M1975 1015 L1975 1080" class="bluearrow"/>
+  <path d="M2345 1015 L2345 1080" class="redarrow"/>
+
+  <path d="M1975 1192 C1975 1235, 2088 1235, 2115 1265" class="bluearrow"/>
+  <path d="M2345 1192 C2345 1235, 2232 1235, 2205 1265" class="redarrow"/>
+
+  <rect x="1930" y="1265" width="460" height="108" class="greenbox"/>
+  <text x="2160" y="1297" text-anchor="middle" class="label">3 action logits and policy</text>
+  <text x="2160" y="1325" text-anchor="middle" class="mono">z_t = g_t − n_t + b_policy</text>
+  <text x="2160" y="1352" text-anchor="middle" class="monoSmall">π_t = softmax(z_t) over [fixate,left,right]</text>
+
+  <rect x="1800" y="1405" width="720" height="72" class="mutebox"/>
+  <text x="2160" y="1433" text-anchor="middle" class="label">RPE-driven summary</text>
+  <text x="2160" y="1459" text-anchor="middle" class="tiny">Intervention target is δ_t or DA_t = clamp(k_RPE·δ_t), so changing the critic-derived prediction error changes D1/D2 gains indirectly.</text>
+
+  <!-- between-panel callouts -->
+  <line x1="870" y1="250" x2="870" y2="1460" stroke="#9ca3af" stroke-width="3" stroke-dasharray="10 10"/>
+  <line x1="1730" y1="250" x2="1730" y2="1460" stroke="#9ca3af" stroke-width="3" stroke-dasharray="10 10"/>
+
+  <rect x="560" y="1495" width="1480" height="48" class="yellowbox"/>
+  <text x="1300" y="1526" text-anchor="middle" class="small">Main distinction: column 2 directly sets dopamine/context to manipulate pathway gains; column 3 derives dopamine from the critic RPE, so manipulating RPE changes D1/D2 through DA_t.</text>
+</svg>

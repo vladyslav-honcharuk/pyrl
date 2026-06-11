@@ -56,7 +56,12 @@ def run(action, trials, pg, scratchpath, dt_save=None):
         print("Saving behavior + activity.")
         trialsfile = activityfile(scratchpath)
 
-        results = pg.run_trials(trials, return_states=True, progress_bar=True)
+        results = pg.run_trials(
+            trials,
+            return_states=True,
+            progress_bar=True,
+            collect_policy_diagnostics=True,
+        )
         U = results['U']
         Z = results['Z']
         Z_b = results['Z_b']
