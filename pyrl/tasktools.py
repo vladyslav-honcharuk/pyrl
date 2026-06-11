@@ -44,27 +44,3 @@ def unravel_index(i, dims):
 def uniform(rng, dt, xmin, xmax):
     """Random duration that's a multiple of dt."""
     return (rng.uniform(xmin, xmax)//dt)*dt
-
-
-def divide(x, y):
-    """Safe division that returns 0 for division by zero."""
-    try:
-        z = x/y
-        if np.isnan(z):
-            raise ZeroDivisionError
-        return z
-    except ZeroDivisionError:
-        return 0
-
-
-def correct_2AFC(perf):
-    """Calculate decision and correct rates for 2-alternative forced choice."""
-    p_decision = perf.n_decision/perf.n_trials
-    p_correct  = divide(perf.n_correct, perf.n_decision)
-    return p_decision, p_correct
-
-
-class Task:
-    """Generic task base class."""
-    def __init__(self):
-        pass
