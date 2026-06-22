@@ -31,6 +31,12 @@ from pyrl.model import Model
 
 def apply_config_overrides(model, args):
     """Apply command-line overrides to a model config."""
+    if getattr(args, 'max_iter', None) is not None:
+        model.config['max_iter'] = args.max_iter
+    if getattr(args, 'checkfreq', None) is not None:
+        model.config['checkfreq'] = args.checkfreq
+    if getattr(args, 'n_validation', None) is not None:
+        model.config['n_validation'] = args.n_validation
     if args.training_context_input:
         model.config['training_context_input'] = True
         if 'CONTEXT' not in model.config['inputs']:
@@ -205,6 +211,12 @@ def main():
                             'If not specified, automatically uses base model name without suffix.')
     parser.add_argument('--load-savefile', type=str, default=None,
                        help='Override checkpoint path to load for info/run actions while keeping output folders from --data-root/--suffix')
+    parser.add_argument('--max-iter', type=int, default=None,
+                       help='Override max training iterations (train action)')
+    parser.add_argument('--checkfreq', type=int, default=None,
+                       help='Override validation/checkpoint frequency (iterations)')
+    parser.add_argument('--n-validation', type=int, default=None,
+                       help='Override number of validation trials per checkpoint')
     parser.add_argument('--finetune-iter', type=int, default=None,
                        help='Number of iterations for fine-tuning (default: use model config)')
     parser.add_argument('--finetune-lr', type=float, default=None,

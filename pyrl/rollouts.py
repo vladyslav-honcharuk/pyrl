@@ -193,6 +193,46 @@ class RolloutMixin:
         scale = float(getattr(self, 'value_modulation_scale', 1.0))
         return torch.as_tensor([value_signal], device=self.device) * scale
 
+    def _select_action(self, t, n, x_t, modulation_signal, storage):
+        """Modulate policy rates by the dopamine/context signal, sample an action, and record diagnostics.
+
+        Shared by the t=0 and t>0 branches of ``_run_trials``; the only
+        per-branch difference is how ``modulation_signal`` is computed.
+        ``storage`` maps diagnostic names to the pre-allocated tensors that
+        should be filled in (absent keys are simply skipped).
+        """
+        if storage.get('Value_Modulation') is not None:
+            storage['Value_Modulation'][t, n] = self.policy_net.value_modulation_context_signal(
+                modulation_signal.squeeze(0)
+            ).squeeze()
+        if storage.get('Recent_RPE_Modulation') is not None:
+            storage['Recent_RPE_Modulation'][t, n] = modulation_signal.squeeze()
+
+        r_t_unmod = self.policy_net.policy_rates(x_t.unsqueeze(0))
+        r_t_for_action = self._apply_opponent_modulation(r_t_unmod, modulation_signal)
+
+        if storage.get('r_policy_mod') is not None:
+            storage['r_policy_mod'][t, n] = r_t_for_action.squeeze(0).detach()
+
+        logits_t = self.policy_net.output_layer(
+            r_t_for_action,
+            temperature=1.0,
+            return_logits=True,
+            control_r=r_t_unmod,
+            modulation_signal=modulation_signal
+        )
+
+        if storage.get('Policy_Values') is not None:
+            storage['Policy_Values'][t, n] = logits_t.squeeze(0).detach()
+            d1_pull, d2_pull = self._policy_pathway_pulls(r_t_for_action)
+            storage['Policy_D1_Pull'][t, n] = d1_pull.squeeze(0).detach()
+            storage['Policy_D2_Pull'][t, n] = d2_pull.squeeze(0).detach()
+
+        z_t_np = torch.softmax(logits_t, dim=-1).squeeze(0).cpu().detach().numpy().reshape(self.Nout)
+        a_t = self.rng.choice(self.Nout, p=z_t_np)
+        storage['A'][t, n, a_t] = 1
+        return a_t
+
     def _run_trials(self, trials, init=None, init_b=None, return_states=False,
                    perf=None, progress_bar=False, context_input=None, training=False,
                    context_sampling=None, collect_policy_diagnostics=None,
@@ -333,6 +373,20 @@ class RolloutMixin:
         if perf is None:
             perf = self.Performance()
 
+        # Per-timestep diagnostic tensors written by _select_action. Only the
+        # tensors that were actually allocated above are included, so the helper
+        # can record each one with a simple presence check.
+        storage = {'A': A}
+        storage['r_policy_mod'] = r_policy_mod if return_states else None
+        if collect_policy_diagnostics:
+            storage['Policy_Values'] = Policy_Values
+            storage['Policy_D1_Pull'] = Policy_D1_Pull
+            storage['Policy_D2_Pull'] = Policy_D2_Pull
+        if value_modulation_enabled:
+            storage['Value_Modulation'] = Value_Modulation
+        if self.use_recent_rpe_modulation:
+            storage['Recent_RPE_Modulation'] = Recent_RPE_Modulation
+
         if progress_bar:
             progress_inc = max(int(n_trials / 50), 1)
             progress_half = 25 * progress_inc
@@ -392,9 +446,6 @@ class RolloutMixin:
                     r_value[t, n] = self.baseline_net.firing_rate(x_t_b)
 
                 # --- ACTION SELECTION ---
-                r_t_unmod = self.policy_net.policy_rates(x_t.unsqueeze(0))
-                r_t_for_action = r_t_unmod
-
                 # Compute modulation signal (either context or RPE-based)
                 if self.use_rpe_modulation:
                     # At t=0, RPE is 0 (no previous value to compare)
@@ -407,38 +458,8 @@ class RolloutMixin:
                 else:
                     ctx_val = self._context_for_step(trial, t, contexts[n], context_phases)
                     modulation_signal = torch.as_tensor([ctx_val], device=self.device)
-                if value_modulation_enabled:
-                    Value_Modulation[t, n] = self.policy_net.value_modulation_context_signal(
-                        modulation_signal.squeeze(0)
-                    ).squeeze()
-                if self.use_recent_rpe_modulation:
-                    Recent_RPE_Modulation[t, n] = modulation_signal.squeeze()
 
-                r_t_for_action = self._apply_opponent_modulation(
-                    r_t_for_action,
-                    modulation_signal
-                )
-                if return_states:
-                    r_policy_mod[t, n] = r_t_for_action.squeeze(0).detach()
-                logits_t = self.policy_net.output_layer(
-                    r_t_for_action,
-                    temperature=1.0,
-                    return_logits=True,
-                    control_r=r_t_unmod,
-                    modulation_signal=modulation_signal
-                )
-                
-                if collect_policy_diagnostics:
-                    Policy_Values[t, n] = logits_t.squeeze(0).detach()
-                    d1_pull, d2_pull = self._policy_pathway_pulls(r_t_for_action)
-                    Policy_D1_Pull[t, n] = d1_pull.squeeze(0).detach()
-                    Policy_D2_Pull[t, n] = d2_pull.squeeze(0).detach()
-                
-                z_t_np = torch.softmax(logits_t, dim=-1).squeeze(0).cpu().detach().numpy()
-                
-                z_t_np = z_t_np.reshape(self.Nout)
-                a_t = self.rng.choice(self.Nout, p=z_t_np)
-                A[t, n, a_t] = 1
+                a_t = self._select_action(t, n, x_t, modulation_signal, storage)
 
                 # Task step
                 u_t_np, r_t, status = self.task.get_step(self.rng, self.dt, trial, t+1, a_t)
@@ -501,9 +522,6 @@ class RolloutMixin:
                         r_value[t, n] = self.baseline_net.firing_rate(x_t_b)
 
                     # --- ACTION SELECTION ---
-                    r_t_unmod = self.policy_net.policy_rates(x_t.unsqueeze(0))
-                    r_t_for_action = r_t_unmod
-
                     # Compute modulation signal (either RPE-based or context-based)
                     if self.use_rpe_modulation:
                         v_t = Z_b[t, n]
@@ -531,38 +549,8 @@ class RolloutMixin:
                     else:
                         ctx_val = self._context_for_step(trial, t, contexts[n], context_phases)
                         modulation_signal = torch.as_tensor([ctx_val], device=self.device)
-                    if value_modulation_enabled:
-                        Value_Modulation[t, n] = self.policy_net.value_modulation_context_signal(
-                            modulation_signal.squeeze(0)
-                        ).squeeze()
-                    if self.use_recent_rpe_modulation:
-                        Recent_RPE_Modulation[t, n] = modulation_signal.squeeze()
 
-                    r_t_for_action = self._apply_opponent_modulation(
-                        r_t_for_action,
-                        modulation_signal
-                    )
-                    if return_states:
-                        r_policy_mod[t, n] = r_t_for_action.squeeze(0).detach()
-                    logits_t = self.policy_net.output_layer(
-                        r_t_for_action,
-                        temperature=1.0,
-                        return_logits=True,
-                        control_r=r_t_unmod,
-                        modulation_signal=modulation_signal
-                    )
-                    
-                    if collect_policy_diagnostics:
-                        Policy_Values[t, n] = logits_t.squeeze(0).detach()
-                        d1_pull, d2_pull = self._policy_pathway_pulls(r_t_for_action)
-                        Policy_D1_Pull[t, n] = d1_pull.squeeze(0).detach()
-                        Policy_D2_Pull[t, n] = d2_pull.squeeze(0).detach()
-                    
-                    z_t_np = torch.softmax(logits_t, dim=-1).squeeze(0).cpu().detach().numpy()
-                    
-                    z_t_np = z_t_np.reshape(self.Nout)
-                    a_t = self.rng.choice(self.Nout, p=z_t_np)
-                    A[t, n, a_t] = 1
+                    a_t = self._select_action(t, n, x_t, modulation_signal, storage)
 
                     if self.abort_on_last_t and t == self.Tmax - 1:
                         U[t, n] = 0
